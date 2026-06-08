@@ -8,7 +8,6 @@ workflows:
     scripts:
       - name: Pin Capacitor to 6.x and install dependencies
         script: |
-          # Pin all capacitor packages to exact 6.x versions so npm doesn't upgrade to 8.x
           npm pkg set \
             dependencies.@capacitor/android="6.2.0" \
             dependencies.@capacitor/core="6.2.0" \
@@ -27,37 +26,77 @@ workflows:
             npx cap add android
           fi
 
-      - name: Apply AndroidManifest permissions
-        script: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-
-          # Permissions before <application>
-          for perm in \
-            "android.permission.ACCESS_FINE_LOCATION" \
-            "android.permission.ACCESS_COARSE_LOCATION" \
-            "android.permission.ACCESS_BACKGROUND_LOCATION" \
-            "android.permission.POST_NOTIFICATIONS" \
-            "android.permission.RECEIVE_BOOT_COMPLETED" \
-            "android.permission.FOREGROUND_SERVICE" \
-            "android.permission.FOREGROUND_SERVICE_LOCATION" \
-            "android.permission.WAKE_LOCK"; do
-            if ! grep -q "$perm" "$MANIFEST"; then
-              sed -i "s|<application|<uses-permission android:name=\"$perm\" />\n    <application|" "$MANIFEST"
-            fi
-          done
-
-          # Boot receiver inside <application>
-          if ! grep -q "LocalNotificationRestoreReceiver" "$MANIFEST"; then
-            sed -i "s|</application>|    <receiver android:name=\"com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver\" android:exported=\"false\"><intent-filter><action android:name=\"android.intent.action.BOOT_COMPLETED\" /></intent-filter></receiver>\n    </application>|" "$MANIFEST"
-          fi
-
-          # Background geolocation foreground service
-          if ! grep -q "BackgroundGeolocationService" "$MANIFEST"; then
-            sed -i "s|</application>|    <service android:name=\"com.equimapper.capacitor.plugin.backgroundgeolocation.BackgroundGeolocationService\" android:foregroundServiceType=\"location\" android:exported=\"false\" />\n    </application>|" "$MANIFEST"
-          fi
-
       - name: Capacitor sync
         script: npx cap sync android
+
+      - name: Apply AndroidManifest permissions
+        script: |
+          python3 << 'PYEOF'
+          import xml.etree.ElementTree as ET
+
+          MANIFEST = "android/app/src/main/AndroidManifest.xml"
+
+          ET.register_namespace('android', 'http://schemas.android.com/apk/res/android')
+          ET.register_namespace('', 'http://schemas.android.com/apk/res/android')
+
+          with open(MANIFEST, 'r') as f:
+              content = f.read()
+
+          ANDROID = "http://schemas.android.com/apk/res/android"
+
+          # Permissions to add before <application>
+          permissions = [
+              "android.permission.ACCESS_FINE_LOCATION",
+              "android.permission.ACCESS_COARSE_LOCATION",
+              "android.permission.ACCESS_BACKGROUND_LOCATION",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.RECEIVE_BOOT_COMPLETED",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.FOREGROUND_SERVICE_LOCATION",
+              "android.permission.WAKE_LOCK",
+          ]
+
+          # Build lines to insert
+          perm_lines = []
+          for p in permissions:
+              tag = f'    <uses-permission android:name="{p}" />'
+              if p not in content:
+                  perm_lines.append(tag)
+
+          receiver = '''    <receiver
+            android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>'''
+
+          service = '''    <service
+            android:name="com.equimapper.capacitor.plugin.backgroundgeolocation.BackgroundGeolocationService"
+            android:foregroundServiceType="location"
+            android:exported="false" />'''
+
+          # Insert permissions just before <application
+          if perm_lines:
+              insert_block = "\n".join(perm_lines) + "\n"
+              content = content.replace("    <application", insert_block + "    <application", 1)
+
+          # Insert receiver and service just before </application>
+          inserts = []
+          if "LocalNotificationRestoreReceiver" not in content:
+              inserts.append(receiver)
+          if "BackgroundGeolocationService" not in content:
+              inserts.append(service)
+
+          if inserts:
+              insert_block = "\n" + "\n".join(inserts) + "\n"
+              content = content.replace("</application>", insert_block + "</application>", 1)
+
+          with open(MANIFEST, 'w') as f:
+              f.write(content)
+
+          print("AndroidManifest.xml updated successfully")
+          PYEOF
 
       - name: Build debug APK
         script: |
