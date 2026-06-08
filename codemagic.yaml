@@ -1,7 +1,7 @@
 workflows:
   android-build:
     name: Android Debug Build
-    max_build_duration: 30
+    max_build_duration: 60
     environment:
       node: 22.12.0
       java: 17
@@ -29,11 +29,28 @@ workflows:
       - name: Capacitor sync
         script: npx cap sync android
 
+      - name: Pin Gradle to 8.2.1 (stable, avoids download timeout)
+        script: |
+          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
+          # Cap sync may upgrade gradle to 8.14.3 which times out on download
+          # Pin back to 8.2.1 which matches Capacitor 6.x and is pre-cached
+          cat > "$WRAPPER" << 'PROPS'
+          distributionBase=GRADLE_USER_HOME
+          distributionPath=wrapper/dists
+          distributionUrl=https\://services.gradle.org/distributions/gradle-8.2.1-all.zip
+          networkTimeout=120000
+          validateDistributionUrl=true
+          zipStoreBase=GRADLE_USER_HOME
+          zipStorePath=wrapper/dists
+          PROPS
+          echo "Gradle wrapper pinned to 8.2.1"
+          cat "$WRAPPER"
+
       - name: Build debug APK
         script: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleDebug
+          ./gradlew assembleDebug --no-daemon
 
     artifacts:
       - android/app/build/outputs/apk/debug/app-debug.apk
