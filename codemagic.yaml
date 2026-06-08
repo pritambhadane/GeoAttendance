@@ -1,0 +1,60 @@
+workflows:
+  android-build:
+    name: Android Debug Build
+    max_build_duration: 30
+    environment:
+      node: 18.17.0
+      java: 17
+    scripts:
+      - name: Install npm dependencies
+        script: npm install
+
+      - name: Build web app
+        script: npm run build
+
+      - name: Capacitor add android (if not present)
+        script: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+
+      - name: Apply AndroidManifest permissions
+        script: |
+          MANIFEST="android/app/src/main/AndroidManifest.xml"
+
+          # Permissions before <application>
+          for perm in \
+            "android.permission.ACCESS_FINE_LOCATION" \
+            "android.permission.ACCESS_COARSE_LOCATION" \
+            "android.permission.ACCESS_BACKGROUND_LOCATION" \
+            "android.permission.POST_NOTIFICATIONS" \
+            "android.permission.RECEIVE_BOOT_COMPLETED" \
+            "android.permission.FOREGROUND_SERVICE" \
+            "android.permission.FOREGROUND_SERVICE_LOCATION" \
+            "android.permission.WAKE_LOCK"; do
+            if ! grep -q "$perm" "$MANIFEST"; then
+              sed -i "s|<application|<uses-permission android:name=\"$perm\" />\n    <application|" "$MANIFEST"
+            fi
+          done
+
+          # Boot receiver inside <application>
+          if ! grep -q "LocalNotificationRestoreReceiver" "$MANIFEST"; then
+            sed -i "s|</application>|    <receiver android:name=\"com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver\" android:exported=\"false\"><intent-filter><action android:name=\"android.intent.action.BOOT_COMPLETED\" /></intent-filter></receiver>\n    </application>|" "$MANIFEST"
+          fi
+
+          # Background geolocation foreground service
+          if ! grep -q "BackgroundGeolocationService" "$MANIFEST"; then
+            sed -i "s|</application>|    <service android:name=\"com.equimapper.capacitor.plugin.backgroundgeolocation.BackgroundGeolocationService\" android:foregroundServiceType=\"location\" android:exported=\"false\" />\n    </application>|" "$MANIFEST"
+          fi
+
+      - name: Capacitor sync
+        script: npx cap sync android
+
+      - name: Build debug APK
+        script: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+    artifacts:
+      - android/app/build/outputs/apk/debug/app-debug.apk
