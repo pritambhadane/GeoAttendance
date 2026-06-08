@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, MapPin, Sliders, Calendar, Share2,
   Menu, X, Radio, Sun, Moon, BarChart3, Crosshair, Clock,
@@ -26,8 +26,15 @@ const TABS: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Live clock — ticks every second so header always shows current time (fix #1)
+  const [nowClock, setNowClock] = useState(() => new Date());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
+
+  useEffect(() => {
+    const id = setInterval(() => setNowClock(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const weeklyMinutes = automation.getWeeklyHours();
   const todayStatus = automation.getTodayStatus();
@@ -132,20 +139,26 @@ function AppContent() {
               </button>
             </div>
           </div>
-          {currentCoords && (
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
-              <div className="flex items-center gap-1.5">
-                <Clock className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
-                <span>Last check: {new Date(currentCoords.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <Crosshair className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
-                <span>Accuracy: ~{currentCoords.accuracy < 1000
-                  ? `${Math.round(currentCoords.accuracy)}m`
-                  : `${(currentCoords.accuracy / 1000).toFixed(1)}km`}</span>
-              </div>
+          {/* Fix #1: show live current time + last GPS scan time separately */}
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
+            <div className="flex items-center gap-1.5">
+              <Clock className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
+              <span>{nowClock.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
             </div>
-          )}
+            {currentCoords && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <Crosshair className="h-3.5 w-3.5 text-indigo-600 dark:text-indigo-400" />
+                  <span>
+                    GPS scan: {new Date(currentCoords.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    {' · '}~{currentCoords.accuracy < 1000
+                      ? `${Math.round(currentCoords.accuracy)}m`
+                      : `${(currentCoords.accuracy / 1000).toFixed(1)}km`}
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 

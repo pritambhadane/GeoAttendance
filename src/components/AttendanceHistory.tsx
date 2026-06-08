@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Calendar, Filter, ArrowUpDown,
-  CheckCircle2, UserCheck, ThumbsUp, ThumbsDown,
+  CheckCircle2, UserCheck, ThumbsUp, ThumbsDown, UserX,
 } from 'lucide-react';
 import { AttendanceLog } from '../types';
 import { formatDuration } from '../utils/storage';
@@ -13,11 +13,12 @@ interface AttendanceHistoryProps {
 
 type SortKey = 'date' | 'profileName' | 'duration' | 'status' | 'attended';
 type SortDir = 'asc' | 'desc';
+type FilterStatus = 'all' | 'auto' | 'manual' | 'absent';
 
 export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryProps) {
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'auto' | 'manual'>('all');
+  const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -55,10 +56,10 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
         )}
       </div>
 
-      {/* Filters */}
+      {/* Filters — now includes Absent (fix #11) */}
       <div className="flex items-center gap-2 flex-wrap">
         <Filter className="h-4 w-4 text-slate-400 dark:text-slate-500" />
-        {(['all', 'auto', 'manual'] as const).map(s => (
+        {(['all', 'auto', 'manual', 'absent'] as const).map(s => (
           <button
             key={s}
             onClick={() => setFilterStatus(s)}
@@ -68,7 +69,7 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
             }`}
           >
-            {s === 'all' ? 'All' : s === 'auto' ? 'Auto' : 'Manual'}
+            {s === 'all' ? 'All' : s === 'auto' ? 'Auto' : s === 'manual' ? 'Manual' : 'Absent'}
           </button>
         ))}
         <div className="border-l border-slate-200 dark:border-slate-700 pl-2 ml-1 flex items-center gap-1">
@@ -102,10 +103,13 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
           {filtered.map(log => {
             const checkInTime = new Date(log.checkIn);
             const checkOutTime = log.checkOut ? new Date(log.checkOut) : null;
-            const isOpen = log.checkOut === null;
+            const isOpen = log.checkOut === null && log.status !== 'absent';
+            const isAbsent = log.status === 'absent';
 
             return (
-              <div key={log.id} className={`card p-4 transition-all ${isOpen ? 'border-emerald-200 ring-1 ring-emerald-100 dark:border-emerald-800 dark:ring-emerald-900' : ''}`}>
+              <div key={log.id} className={`card p-4 transition-all ${
+                isOpen ? 'border-emerald-200 ring-1 ring-emerald-100 dark:border-emerald-800 dark:ring-emerald-900' : ''
+              } ${isAbsent ? 'border-rose-200 dark:border-rose-900' : ''}`}>
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="h-10 w-10 rounded-xl flex items-center justify-center text-white text-sm font-bold" style={{ backgroundColor: log.profileColor }}>
@@ -117,51 +121,72 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {isOpen ? (
+                    {isOpen && (
                       <span className="rounded-lg bg-emerald-100 text-emerald-700 px-2 py-0.5 text-xs font-semibold flex items-center gap-1 animate-pulse dark:bg-emerald-950 dark:text-emerald-300">
                         <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                         Active
                       </span>
-                    ) : null}
-                    <span className={`rounded-lg px-2 py-0.5 text-xs font-semibold ${log.status === 'auto' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'}`}>
-                      {log.status === 'auto' ? (
-                        <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Auto</span>
-                      ) : (
-                        <span className="flex items-center gap-1"><UserCheck className="h-3 w-3" /> Manual</span>
-                      )}
-                    </span>
+                    )}
+                    {/* Fix #11: Absent badge, distinct from Auto/Manual */}
+                    {isAbsent ? (
+                      <span className="rounded-lg px-2 py-0.5 text-xs font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
+                        <span className="flex items-center gap-1"><UserX className="h-3 w-3" /> Absent</span>
+                      </span>
+                    ) : (
+                      <span className={`rounded-lg px-2 py-0.5 text-xs font-semibold ${log.status === 'auto' ? 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'}`}>
+                        {log.status === 'auto' ? (
+                          <span className="flex items-center gap-1"><CheckCircle2 className="h-3 w-3" /> Auto</span>
+                        ) : (
+                          <span className="flex items-center gap-1"><UserCheck className="h-3 w-3" /> Manual</span>
+                        )}
+                      </span>
+                    )}
                   </div>
                 </div>
-                <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
-                  <div className="rounded-lg bg-emerald-50 p-2 dark:bg-emerald-950">
-                    <p className="text-emerald-600 dark:text-emerald-400 font-medium mb-0.5">Check-In</p>
-                    <p className="text-emerald-800 dark:text-emerald-200 font-semibold">
-                      {checkInTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+
+                {/* Fix #11: Absent records show a simple absent notice instead of fake time cells */}
+                {isAbsent ? (
+                  <div className="mt-3 rounded-xl bg-rose-50 border border-rose-100 p-3 dark:bg-rose-950 dark:border-rose-900">
+                    <p className="text-sm text-rose-700 dark:text-rose-300 font-medium flex items-center gap-2">
+                      <UserX className="h-4 w-4 flex-shrink-0" />
+                      Absent — did not check in for this profile
+                    </p>
+                    <p className="text-xs text-rose-500 dark:text-rose-400 mt-0.5">
+                      Scheduled check-in: {checkInTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-rose-50 p-2 dark:bg-rose-950">
-                    <p className="text-rose-600 dark:text-rose-400 font-medium mb-0.5">Check-Out</p>
-                    <p className="text-rose-800 dark:text-rose-200 font-semibold">
-                      {checkOutTime ? checkOutTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
-                    </p>
+                ) : (
+                  <div className="mt-3 grid grid-cols-4 gap-2 text-xs">
+                    <div className="rounded-lg bg-emerald-50 p-2 dark:bg-emerald-950">
+                      <p className="text-emerald-600 dark:text-emerald-400 font-medium mb-0.5">Check-In</p>
+                      <p className="text-emerald-800 dark:text-emerald-200 font-semibold">
+                        {checkInTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-rose-50 p-2 dark:bg-rose-950">
+                      <p className="text-rose-600 dark:text-rose-400 font-medium mb-0.5">Check-Out</p>
+                      <p className="text-rose-800 dark:text-rose-200 font-semibold">
+                        {checkOutTime ? checkOutTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--'}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-indigo-50 p-2 dark:bg-indigo-950">
+                      <p className="text-indigo-600 dark:text-indigo-400 font-medium mb-0.5">Duration</p>
+                      <p className="text-indigo-800 dark:text-indigo-200 font-semibold">{formatDuration(log.duration)}</p>
+                    </div>
+                    <div className={`rounded-lg p-2 flex flex-col items-center justify-center ${
+                      log.attended
+                        ? 'bg-green-400 dark:bg-green-500'
+                        : 'bg-red-500 dark:bg-red-600'
+                    }`}>
+                      <p className={`font-medium mb-0.5 ${log.attended ? 'text-green-950 dark:text-green-50' : 'text-red-50'}`}>
+                        {log.attended ? <ThumbsUp className="h-3.5 w-3.5 inline" /> : <ThumbsDown className="h-3.5 w-3.5 inline" />}
+                      </p>
+                      <p className={`font-bold ${log.attended ? 'text-green-950 dark:text-green-50' : 'text-red-50'}`}>
+                        {log.attended ? 'Yes' : 'No'}
+                      </p>
+                    </div>
                   </div>
-                  <div className="rounded-lg bg-indigo-50 p-2 dark:bg-indigo-950">
-                    <p className="text-indigo-600 dark:text-indigo-400 font-medium mb-0.5">Duration</p>
-                    <p className="text-indigo-800 dark:text-indigo-200 font-semibold">{formatDuration(log.duration)}</p>
-                  </div>
-                  <div className={`rounded-lg p-2 flex flex-col items-center justify-center ${
-                    log.attended
-                      ? 'bg-green-400 dark:bg-green-500'
-                      : 'bg-red-500 dark:bg-red-600'
-                  }`}>
-                    <p className={`font-medium mb-0.5 ${log.attended ? 'text-green-950 dark:text-green-50' : 'text-red-50'}`}>
-                      {log.attended ? <ThumbsUp className="h-3.5 w-3.5 inline" /> : <ThumbsDown className="h-3.5 w-3.5 inline" />}
-                    </p>
-                    <p className={`font-bold ${log.attended ? 'text-green-950 dark:text-green-50' : 'text-red-50'}`}>
-                      {log.attended ? 'Yes' : 'No'}
-                    </p>
-                  </div>
-                </div>
+                )}
               </div>
             );
           })}

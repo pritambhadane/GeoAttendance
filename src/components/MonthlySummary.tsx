@@ -78,7 +78,8 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
     for (const log of monthLogs) {
       const day = dayMap.get(log.date);
       if (!day) continue;
-      day.totalMinutes += log.duration || 0;
+      // Fix #6: exclude absent records from duration totals
+      if (log.status !== 'absent') day.totalMinutes += log.duration || 0;
       day.sessions += 1;
       if (log.attended) { day.attended = true; day.profiles.push(log.profileName); }
       else { day.absent = true; }
@@ -88,7 +89,8 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
     const workingDays = days.filter(d => d.sessions > 0 || d.attended || d.absent);
     const attendedDays = days.filter(d => d.attended && !d.absent);
     const absentDays = days.filter(d => d.absent && !d.attended);
-    const totalMinutes = monthLogs.reduce((s, l) => s + (l.duration || 0), 0);
+    // Fix #6: exclude absent records from total minutes
+    const totalMinutes = monthLogs.filter(l => l.status !== 'absent').reduce((s, l) => s + (l.duration || 0), 0);
     const avgDailyMinutes = workingDays.length > 0 ? totalMinutes / workingDays.length : 0;
 
     // Profile breakdown
@@ -106,7 +108,8 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
         });
       }
       const pb = profileMap.get(log.profileId)!;
-      pb.totalMinutes += log.duration || 0;
+      // Fix #6: exclude absent records from duration totals
+      if (log.status !== 'absent') pb.totalMinutes += log.duration || 0;
       pb.sessions += 1;
       if (log.attended) pb.attendedDays += 1;
       else pb.absentDays += 1;
@@ -180,7 +183,8 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
     const dowMinutes = [0, 0, 0, 0, 0, 0, 0];
     const dowCounts = [0, 0, 0, 0, 0, 0, 0];
     for (const log of monthLogs) {
-      const day = new Date(log.date).getDay();
+      if (log.status === 'absent') continue; // Fix #6: skip absent in dow breakdown
+      const day = new Date(log.date + 'T00:00:00').getDay();
       dowMinutes[day] += log.duration || 0;
       dowCounts[day] += 1;
     }

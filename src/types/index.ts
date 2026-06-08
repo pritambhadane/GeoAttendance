@@ -22,7 +22,7 @@ export interface AttendanceLog {
   checkIn: string; // ISO timestamp
   checkOut: string | null; // ISO timestamp
   duration: number | null; // minutes
-  status: 'auto' | 'manual';
+  status: 'auto' | 'manual' | 'absent';
   profileColor: string;
   attended: boolean;
 }

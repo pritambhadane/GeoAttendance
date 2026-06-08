@@ -26,11 +26,19 @@ export function getLogs(): AttendanceLog[] {
   const data = localStorage.getItem(LOGS_KEY);
   if (!data) return [];
   const parsed: AttendanceLog[] = JSON.parse(data);
-  // Migrate old logs missing attended field
-  return parsed.map(l => ({
-    ...l,
-    attended: l.attended ?? (l.duration !== null && l.duration > 0),
-  }));
+  // Migrate old logs: fix attended field and detect old-style absent records
+  return parsed.map(l => {
+    // Old absent records: status=auto, attended=false, duration=0, checkIn===checkOut
+    const isOldAbsent = l.attended === false && l.duration === 0 && l.checkOut !== null
+      && l.checkIn === l.checkOut && l.status !== 'absent';
+    return {
+      ...l,
+      status: isOldAbsent ? 'absent' : l.status,
+      checkOut: isOldAbsent ? null : l.checkOut,
+      duration: isOldAbsent ? null : l.duration,
+      attended: l.attended ?? (l.duration !== null && l.duration > 0),
+    };
+  });
 }
 
 export function saveLogs(logs: AttendanceLog[]): void {
@@ -113,7 +121,10 @@ export function timeToStr(date: Date): string {
 }
 
 export function dateToStr(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];

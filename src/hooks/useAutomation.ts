@@ -22,7 +22,28 @@ import {
 interface ProcessedCheckIn {
   profileId: string;
   date: string;
-  timeKey: string; // HH:mm
+  timeKey: string; // HH:mm or special key
+}
+
+const PROCESSED_KEY = 'geo_attendance_processed';
+const ABSENT_PROCESSED_KEY = 'geo_attendance_absent_processed';
+
+function loadProcessedFromStorage(key: string, currentDateStr: string): ProcessedCheckIn[] {
+  try {
+    const data = localStorage.getItem(key);
+    if (!data) return [];
+    const parsed: ProcessedCheckIn[] = JSON.parse(data);
+    // Only keep entries for today
+    return parsed.filter(p => p.date === currentDateStr);
+  } catch {
+    return [];
+  }
+}
+
+function saveProcessedToStorage(key: string, entries: ProcessedCheckIn[]): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(entries));
+  } catch { /* noop */ }
 }
 
 export function useAutomation() {
@@ -31,8 +52,17 @@ export function useAutomation() {
   const [simulation, setSimulation] = useState<SimulationState>(getSimulation);
   const [currentPosition, setCurrentPosition] = useState<PositionData | null>(null);
   const [positionError, setPositionError] = useState<string | null>(null);
+
+  // Use refs for processed state — persisted to localStorage across restarts
   const processedRef = useRef<ProcessedCheckIn[]>([]);
   const absentProcessedRef = useRef<ProcessedCheckIn[]>([]);
+  // Keep logs in a ref so the tick effect doesn't need logs in its deps (fix #9)
+  const logsRef = useRef<AttendanceLog[]>(logs);
+
+  // Keep logsRef in sync with logs state
+  useEffect(() => {
+    logsRef.current = logs;
+  }, [logs]);
 
   // ── Request permissions on mount ──────────────────────────────────────────
   useEffect(() => {
@@ -55,7 +85,7 @@ export function useAutomation() {
     return currentPosition;
   }, [simulation, currentPosition]);
 
-  // ── Native location watch (replaces polling in native builds) ─────────────
+  // ── Native location watch ─────────────────────────────────────────────────
   useEffect(() => {
     if (simulation.enabled) return;
 
@@ -63,14 +93,12 @@ export function useAutomation() {
 
     const start = async () => {
       try {
-        // Initial position
         const pos = await getNativePosition();
         if (active) { setCurrentPosition(pos); setPositionError(null); }
       } catch (e) {
         if (active) setPositionError('Unable to get location');
       }
 
-      // Continuous watch
       await startLocationWatch(
         (pos) => { if (active) { setCurrentPosition(pos); setPositionError(null); } },
         () => { if (active) setPositionError('Location watch failed'); }
@@ -86,22 +114,23 @@ export function useAutomation() {
 
   // Derive tracking state from logs
   const getOpenSessions = useCallback(() => {
-    return logs.filter(l => l.checkOut === null);
-  }, [logs]);
+    return logsRef.current.filter(l => l.checkOut === null);
+  }, []);
 
   const getTrackingStatus = useCallback((): TrackingStatus => {
-    const open = logs.filter(l => l.checkOut === null);
+    const open = logsRef.current.filter(l => l.checkOut === null);
     if (open.length > 0) return 'checked-in';
-    if (logs.length > 0) {
-      const latest = logs[logs.length - 1];
+    if (logsRef.current.length > 0) {
+      const latest = logsRef.current[logsRef.current.length - 1];
       if (latest.checkOut) return 'checked-out';
     }
     return 'idle';
-  }, [logs]);
+  }, []);
 
   // ── Core automation tick ──────────────────────────────────────────────────
+  // profiles and simulation in deps — but NOT logs (use logsRef instead, fix #9)
   useEffect(() => {
-    const tick = () => {
+    const tick = (isCatchUp = false) => {
       const now = getCurrentTime();
       const currentTimeStr = timeToStr(now);
       const coords = getCurrentCoords();
@@ -112,11 +141,23 @@ export function useAutomation() {
       const currentDay = now.getDay();
 
       let logsChanged = false;
-      let updatedLogs = [...logs];
+      let updatedLogs = [...logsRef.current];
 
-      // Clean old processed entries (older than 2 minutes)
+      // Load processed state from localStorage on first tick (restores across app restarts — fix #3)
+      if (processedRef.current.length === 0) {
+        processedRef.current = loadProcessedFromStorage(PROCESSED_KEY, currentDateStr);
+      }
+      if (absentProcessedRef.current.length === 0) {
+        absentProcessedRef.current = loadProcessedFromStorage(ABSENT_PROCESSED_KEY, currentDateStr);
+      }
+
+      // Clean old processed entries
       processedRef.current = processedRef.current.filter(
-        p => p.date === currentDateStr && Math.abs(timeToMinutes(currentTimeStr) - timeToMinutes(p.timeKey)) < 2
+        p => p.date === currentDateStr && Math.abs(timeToMinutes(currentTimeStr) - timeToMinutes(p.timeKey.replace(/^(out:|exit:)/, ''))) < 2
+      );
+      // Keep exit and out keys for the full day — only time-based check-in keys need pruning
+      processedRef.current = processedRef.current.filter(
+        p => p.date === currentDateStr
       );
       absentProcessedRef.current = absentProcessedRef.current.filter(
         p => p.date === currentDateStr
@@ -129,14 +170,21 @@ export function useAutomation() {
         const dist = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
         const isWithinRadius = dist <= profile.radius;
 
-        // Check if this profile already has an open session today
         const hasOpenSession = updatedLogs.some(
           l => l.profileId === profile.id && l.checkOut === null && l.date === currentDateStr
         );
 
         // ── AUTO CHECK-IN ────────────────────────────────────────────────────
         if (!hasOpenSession && isWithinRadius) {
-          const withinCheckInWindow = isTimeWithinWindow(currentTimeStr, profile.checkInTime, 1);
+          const checkInMinutesProfile = timeToMinutes(profile.checkInTime);
+          const currentMinutesNow = timeToMinutes(currentTimeStr);
+
+          // Normal ±1 min window for live tick; catch-up window = markAbsentAfter (fix #4)
+          const windowMinutes = isCatchUp ? profile.markAbsentAfter : 1;
+          const withinCheckInWindow = isCatchUp
+            ? (currentMinutesNow >= checkInMinutesProfile && currentMinutesNow <= checkInMinutesProfile + windowMinutes)
+            : Math.abs(currentMinutesNow - checkInMinutesProfile) <= windowMinutes;
+
           const alreadyProcessed = processedRef.current.some(
             p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === profile.checkInTime
           );
@@ -161,7 +209,7 @@ export function useAutomation() {
               date: currentDateStr,
               timeKey: profile.checkInTime,
             });
-            // 🔔 Notify
+            saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
             notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
           }
         }
@@ -189,8 +237,8 @@ export function useAutomation() {
               date: currentDateStr,
               timeKey: `out:${profile.checkOutTime}`,
             });
-            // 🔔 Notify
-            const openLog = logs.find(l => l.profileId === profile.id && l.checkOut === null && l.date === currentDateStr);
+            saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
+            const openLog = logsRef.current.find(l => l.profileId === profile.id && l.checkOut === null && l.date === currentDateStr);
             if (openLog) {
               const dur = Math.round((now.getTime() - new Date(openLog.checkIn).getTime()) / 60000);
               notifyCheckOut(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), dur);
@@ -205,7 +253,8 @@ export function useAutomation() {
             if (openLog) {
               const timeSinceCheckIn = (now.getTime() - new Date(openLog.checkIn).getTime()) / 60000;
               if (timeSinceCheckIn > 5) {
-                const exitKey = `exit:${currentDateStr}`;
+                // Fix #10: key on session id, not date — allows second exit same day after re-check-in
+                const exitKey = `exit:${openLog.id}`;
                 const alreadyProcessedExit = processedRef.current.some(
                   p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === exitKey
                 );
@@ -225,7 +274,7 @@ export function useAutomation() {
                     date: currentDateStr,
                     timeKey: exitKey,
                   });
-                  // 🔔 Notify geofence exit
+                  saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
                   notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
                 }
               }
@@ -244,15 +293,16 @@ export function useAutomation() {
             p => p.profileId === profile.id && p.date === currentDateStr
           );
           if (!existingLog && !alreadyMarkedAbsent) {
+            // Fix #2: absent log uses scheduled times, null checkOut, status:'absent'
             const absentLog: AttendanceLog = {
               id: generateId(),
               profileId: profile.id,
               profileName: profile.name,
               date: currentDateStr,
-              checkIn: now.toISOString(),
-              checkOut: now.toISOString(),
-              duration: 0,
-              status: 'auto',
+              checkIn: `${currentDateStr}T${profile.checkInTime}:00`,
+              checkOut: null,
+              duration: null,
+              status: 'absent',
               profileColor: profile.color,
               attended: false,
             };
@@ -263,7 +313,7 @@ export function useAutomation() {
               date: currentDateStr,
               timeKey: 'absent',
             });
-            // 🔔 Notify absent
+            saveProcessedToStorage(ABSENT_PROCESSED_KEY, absentProcessedRef.current);
             notifyAbsent(profile.name);
           }
         }
@@ -271,14 +321,19 @@ export function useAutomation() {
 
       if (logsChanged) {
         setLogs(updatedLogs);
+        logsRef.current = updatedLogs;
         saveLogs(updatedLogs);
       }
     };
 
-    tick();
-    const id = setInterval(tick, 5000);
+    // Run catch-up scan on mount (fix #4)
+    tick(true);
+    // Then run normal ticks
+    const id = setInterval(() => tick(false), 5000);
     return () => clearInterval(id);
-  }, [profiles, logs, simulation, currentPosition, getCurrentTime, getCurrentCoords]);
+  // logs intentionally NOT in deps — use logsRef.current inside tick (fix #9)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles, simulation, currentPosition, getCurrentTime, getCurrentCoords]);
 
   // Profile CRUD
   const addProfile = useCallback((profile: Omit<LocationProfile, 'id' | 'color'>) => {
@@ -316,7 +371,7 @@ export function useAutomation() {
     if (!profile) return;
     const now = getCurrentTime();
     const currentDateStr = dateToStr(now);
-    const alreadyOpen = logs.some(l => l.profileId === profileId && l.checkOut === null && l.date === currentDateStr);
+    const alreadyOpen = logsRef.current.some(l => l.profileId === profileId && l.checkOut === null && l.date === currentDateStr);
     if (alreadyOpen) return;
 
     const newLog: AttendanceLog = {
@@ -331,16 +386,17 @@ export function useAutomation() {
       profileColor: profile.color,
       attended: true,
     };
-    const updated = [...logs, newLog];
+    const updated = [...logsRef.current, newLog];
     setLogs(updated);
+    logsRef.current = updated;
     saveLogs(updated);
-  }, [profiles, logs, getCurrentTime]);
+  }, [profiles, getCurrentTime]);
 
   // Manual check-out
   const manualCheckOut = useCallback((profileId?: string) => {
     const now = getCurrentTime();
     const currentDateStr = dateToStr(now);
-    let updated = [...logs];
+    let updated = [...logsRef.current];
 
     if (profileId) {
       updated = updated.map(l => {
@@ -366,8 +422,9 @@ export function useAutomation() {
       });
     }
     setLogs(updated);
+    logsRef.current = updated;
     saveLogs(updated);
-  }, [logs, profiles, getCurrentTime]);
+  }, [profiles, getCurrentTime]);
 
   // Simulation
   const updateSimulation = useCallback((sim: Partial<SimulationState>) => {
@@ -382,30 +439,33 @@ export function useAutomation() {
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
-    const weekLogs = logs.filter(l => {
+    const weekLogs = logsRef.current.filter(l => {
       const d = new Date(l.checkIn);
-      return d >= startOfWeek && l.duration !== null;
+      return d >= startOfWeek && l.duration !== null && l.status !== 'absent';
     });
     return weekLogs.reduce((sum, l) => sum + (l.duration || 0), 0);
-  }, [logs, getCurrentTime]);
+  }, [getCurrentTime]);
 
   // Today's status
   const getTodayStatus = useCallback(() => {
     const now = getCurrentTime();
     const todayStr = dateToStr(now);
-    const todayLogs = logs.filter(l => l.date === todayStr);
-    const openSessions = todayLogs.filter(l => l.checkOut === null);
-    const totalMinutes = todayLogs.reduce((sum, l) => sum + (l.duration || 0), 0);
+    const todayLogs = logsRef.current.filter(l => l.date === todayStr);
+    const openSessions = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
+    const totalMinutes = todayLogs
+      .filter(l => l.status !== 'absent')
+      .reduce((sum, l) => sum + (l.duration || 0), 0);
     return {
       checkedIn: openSessions.length > 0,
       totalMinutes,
       logCount: todayLogs.length,
       openSessions,
     };
-  }, [logs, getCurrentTime]);
+  }, [getCurrentTime]);
 
   const clearLogs = useCallback(() => {
     setLogs([]);
+    logsRef.current = [];
     saveLogs([]);
   }, []);
 

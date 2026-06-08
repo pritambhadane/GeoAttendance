@@ -11,13 +11,20 @@ interface ExportSuiteProps {
   weeklyMinutes: number;
 }
 
+function statusLabel(log: AttendanceLog): string {
+  if (log.status === 'absent') return 'Absent';
+  return log.status === 'auto' ? 'Auto' : 'Manual';
+}
+
 export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
   const exportCSV = () => {
     const header = 'Date,Profile,Check-In,Check-Out,Duration (min),Status,Attended\n';
     const rows = logs.map(l => {
-      const ci = new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const ci = l.status === 'absent'
+        ? new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const co = l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--';
-      return `${l.date},"${l.profileName}",${ci},${co},${l.duration ?? '--'},${l.status},${l.attended ? 'Yes' : 'No'}`;
+      return `${l.date},"${l.profileName}",${ci},${co},${l.duration ?? '--'},${statusLabel(l)},${l.attended ? 'Yes' : 'No'}`;
     }).join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -43,9 +50,9 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
       l.date,
       l.profileName,
       new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active',
+      l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--',
       formatDuration(l.duration),
-      l.status === 'auto' ? 'Auto' : 'Manual',
+      statusLabel(l),
       l.attended ? 'Yes' : 'No',
     ]);
 
@@ -58,6 +65,10 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
       alternateRowStyles: { fillColor: [248, 250, 252] },
       margin: { left: 10, right: 10 },
       didParseCell: (data: any) => {
+        if (data.section === 'body' && data.column?.index === 5 && data.cell) {
+          const val = tableData[data.row?.index ?? 0]?.[5];
+          if (val === 'Absent') data.cell.styles.fillColor = [239, 68, 68];
+        }
         if (data.section === 'body' && data.column?.index === 6 && data.cell) {
           const val = tableData[data.row?.index ?? 0]?.[6];
           if (val === 'Yes') data.cell.styles.fillColor = [34, 197, 94];
@@ -75,7 +86,7 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
     const ci = new Date(latestLog.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     const co = latestLog.checkOut
       ? new Date(latestLog.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      : 'Active';
+      : '--';
     const text = encodeURIComponent(
       `Attendance Report\n` +
       `Date: ${latestLog.date}\n` +
@@ -85,7 +96,7 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
       `Duration: ${formatDuration(latestLog.duration)}\n` +
       `Attended: ${latestLog.attended ? 'Yes' : 'No'}\n` +
       `Weekly Total: ${formatDuration(weeklyMinutes)}\n` +
-      `Status: ${latestLog.status === 'auto' ? 'Auto-Logged' : 'Manual'}`
+      `Status: ${statusLabel(latestLog)}`
     );
     window.open(`https://wa.me/?text=${text}`, '_blank');
   };
@@ -93,8 +104,8 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
   const shareFullReport = () => {
     const lines = logs.map(l => {
       const ci = new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      const co = l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Active';
-      return `${l.date} | ${l.profileName} | ${ci}-${co} | ${formatDuration(l.duration)} | ${l.attended ? 'Present' : 'Absent'} | ${l.status}`;
+      const co = l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--';
+      return `${l.date} | ${l.profileName} | ${ci}-${co} | ${formatDuration(l.duration)} | ${l.attended ? 'Present' : 'Absent'} | ${statusLabel(l)}`;
     });
     const text = encodeURIComponent(
       `Attendance Report - Total Duration: ${formatDuration(weeklyMinutes)}\n` +
