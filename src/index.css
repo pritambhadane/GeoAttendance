@@ -1,0 +1,105 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-200;
+    overscroll-behavior: none;
+  }
+
+  ::selection {
+    @apply bg-emerald-200 text-emerald-900 dark:bg-emerald-800 dark:text-emerald-100;
+  }
+}
+
+@layer utilities {
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .animate-in {
+    animation: slideIn 0.3s ease-out;
+  }
+
+  .card {
+    @apply rounded-2xl bg-white border border-slate-200 shadow-sm dark:bg-slate-900 dark:border-slate-800;
+  }
+
+  .card-inner {
+    @apply rounded-xl bg-slate-50 border border-slate-100 dark:bg-slate-800 dark:border-slate-700;
+  }
+
+  .text-heading {
+    @apply text-slate-800 dark:text-slate-100;
+  }
+
+  .text-sub {
+    @apply text-slate-500 dark:text-slate-400;
+  }
+
+  .text-label {
+    @apply text-sm font-medium text-slate-700 dark:text-slate-300;
+  }
+
+  .input-field {
+    @apply w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-800
+      focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition
+      dark:bg-slate-800 dark:border-slate-600 dark:text-slate-200
+      dark:focus:ring-indigo-400;
+  }
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-slate-300 dark:bg-slate-700 rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-400 dark:bg-slate-600;
+}
+
+/* Range input styling */
+input[type="range"] {
+  @apply h-2 rounded-full appearance-none bg-slate-200 cursor-pointer dark:bg-slate-700;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  @apply appearance-none w-5 h-5 rounded-full bg-indigo-600 shadow-sm cursor-pointer;
+}
+
+/* Time input styling */
+input[type="time"] {
+  @apply cursor-pointer;
+}
+
+/* Number input arrows */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  @apply opacity-50;
+}
