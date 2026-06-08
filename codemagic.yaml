@@ -29,34 +29,14 @@ workflows:
       - name: Capacitor sync
         script: npx cap sync android
 
-      - name: Pin Gradle to 8.7 (stable, JDK17 compatible)
-        script: |
-          WRAPPER="android/gradle/wrapper/gradle-wrapper.properties"
-          # Cap sync upgrades gradle to 8.14.3 which times out on download
-          # 8.7 is stable, JDK17 compatible, and downloads reliably
-          cat > "$WRAPPER" << 'PROPS'
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\://services.gradle.org/distributions/gradle-8.7-all.zip
-          networkTimeout=120000
-          validateDistributionUrl=true
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          PROPS
-          echo "Gradle wrapper pinned to 8.7"
-          cat "$WRAPPER"
+      - name: Install Gradle via Homebrew
+        script: brew install gradle
 
-      - name: Patch AGP version to match Gradle 8.7
-        script: |
-          # AGP 8.2.1 (default for cap 6) requires Gradle >=8.2, works fine with 8.7
-          # No AGP change needed — just verify
-          grep "com.android.tools.build:gradle" android/build.gradle || true
-
-      - name: Build debug APK
+      - name: Build debug APK using system Gradle
         script: |
           cd android
-          chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon
+          # Use system gradle (brew) directly - avoids wrapper download entirely
+          gradle assembleDebug --no-daemon
 
     artifacts:
       - android/app/build/outputs/apk/debug/app-debug.apk
