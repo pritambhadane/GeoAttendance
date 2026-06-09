@@ -11,7 +11,6 @@ import SimulationPanel from './components/SimulationPanel';
 import AttendanceHistory from './components/AttendanceHistory';
 import ExportSuite from './components/ExportSuite';
 import MonthlySummary from './components/MonthlySummary';
-import LogViewer from './components/LogViewer';
 
 type Tab = 'dashboard' | 'profiles' | 'simulation' | 'history' | 'monthly' | 'export';
 
@@ -27,23 +26,10 @@ const TABS: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  // Live clock — ticks every second so header always shows current time (fix #1)
   const [nowClock, setNowClock] = useState(() => new Date());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
-
-  // ── Log viewer: tap the app title 5 times to open ──────────────────────
-  const [showLogs, setShowLogs] = useState(false);
-  const [titleTapCount, setTitleTapCount] = useState(0);
-  const handleTitleTap = () => {
-    setTitleTapCount(n => {
-      const next = n + 1;
-      if (next >= 5) {
-        setShowLogs(true);
-        return 0;
-      }
-      return next;
-    });
-  };
 
   useEffect(() => {
     const id = setInterval(() => setNowClock(new Date()), 1000);
@@ -112,10 +98,6 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
-
-      {/* Log Viewer Overlay — tap title 5x to open */}
-      {showLogs && <LogViewer onClose={() => setShowLogs(false)} />}
-
       {/* Top Header */}
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-200 dark:bg-slate-900/80 dark:border-slate-800">
         <div className="max-w-2xl mx-auto px-4 py-3">
@@ -124,15 +106,9 @@ function AppContent() {
               <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white shadow-sm">
                 <Radio className="h-5 w-5" />
               </div>
-              {/* Tap this 5 times to open the log viewer */}
-              <div onClick={handleTitleTap} style={{ userSelect: 'none' }}>
+              <div>
                 <h1 className="text-base font-bold text-slate-800 dark:text-slate-100 leading-tight">GeoAttendance</h1>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">
-                  Smart Location Tracker
-                  {titleTapCount > 0 && titleTapCount < 5 && (
-                    <span className="ml-1 text-emerald-500">{'·'.repeat(titleTapCount)}</span>
-                  )}
-                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-tight">Smart Location Tracker</p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -163,6 +139,7 @@ function AppContent() {
               </button>
             </div>
           </div>
+          {/* Fix #1: show live current time + last GPS scan time separately */}
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
             <div className="flex items-center gap-1.5">
               <Clock className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
