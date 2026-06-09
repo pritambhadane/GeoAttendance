@@ -4,11 +4,12 @@ import {
   XCircle, Calendar, ChevronLeft, ChevronRight, AlertTriangle,
   Award, Target, Flame, Zap,
 } from 'lucide-react';
-import { AttendanceLog } from '../types';
+import { AttendanceLog, LocationProfile } from '../types';
 import { formatDuration, getDayName } from '../utils/storage';
 
 interface MonthlySummaryProps {
   logs: AttendanceLog[];
+  profiles: LocationProfile[];
 }
 
 interface DayData {
@@ -37,10 +38,11 @@ function getMonthName(m: number): string {
     'July', 'August', 'September', 'October', 'November', 'December'][m];
 }
 
-export default function MonthlySummary({ logs }: MonthlySummaryProps) {
+export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) {
   const now = new Date();
   const [viewMonth, setViewMonth] = useState(now.getMonth());
   const [viewYear, setViewYear] = useState(now.getFullYear());
+  const [selectedProfileId, setSelectedProfileId] = useState<string>('all');
 
   const prevMonth = () => {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
@@ -56,7 +58,10 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
   const analytics = useMemo(() => {
     const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
     const monthStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
-    const monthLogs = logs.filter(l => l.date.startsWith(monthStr));
+    const allMonthLogs = logs.filter(l => l.date.startsWith(monthStr));
+    const monthLogs = selectedProfileId === 'all'
+      ? allMonthLogs
+      : allMonthLogs.filter(l => l.profileId === selectedProfileId);
 
     // Build per-day data
     const dayMap = new Map<string, DayData>();
@@ -197,7 +202,7 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
       longestStreak, activeStreak, bestDay, avgCheckInStr,
       attendanceRate, dowMinutes, dowCounts,
     };
-  }, [logs, viewMonth, viewYear]);
+  }, [logs, viewMonth, viewYear, selectedProfileId]);
 
   const {
     days, workingDays, attendedDays, absentDays,
@@ -253,22 +258,63 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
 
   return (
     <div className="space-y-6">
-      {/* Header with month navigation */}
-      <div className="flex items-center justify-between">
+      {/* Header: month nav + profile selector in one row */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
           <h2 className="text-xl font-bold text-heading">Monthly Summary</h2>
           <p className="text-sm text-sub">Key trends and attendance insights</p>
         </div>
-        <div className="flex items-center gap-2">
-          <button onClick={prevMonth} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition dark:bg-slate-800 dark:hover:bg-slate-700">
-            <ChevronLeft className="h-4 w-4 text-slate-600 dark:text-slate-300" />
-          </button>
-          <button onClick={goToday} className="rounded-lg bg-emerald-100 text-emerald-700 px-3 py-1.5 text-sm font-semibold hover:bg-emerald-200 transition dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-900">
-            {getMonthName(viewMonth)} {viewYear}
-          </button>
-          <button onClick={nextMonth} disabled={isCurrentMonth} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700">
-            <ChevronRight className="h-4 w-4 text-slate-600 dark:text-slate-300" />
-          </button>
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          {/* Month navigation */}
+          <div className="flex items-center gap-1">
+            <button onClick={prevMonth} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition dark:bg-slate-800 dark:hover:bg-slate-700">
+              <ChevronLeft className="h-4 w-4 text-slate-600 dark:text-slate-300" />
+            </button>
+            <button onClick={goToday} className="rounded-lg bg-emerald-100 text-emerald-700 px-3 py-1.5 text-sm font-semibold hover:bg-emerald-200 transition dark:bg-emerald-950 dark:text-emerald-300 dark:hover:bg-emerald-900">
+              {getMonthName(viewMonth)} {viewYear}
+            </button>
+            <button onClick={nextMonth} disabled={isCurrentMonth} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition disabled:opacity-30 dark:bg-slate-800 dark:hover:bg-slate-700">
+              <ChevronRight className="h-4 w-4 text-slate-600 dark:text-slate-300" />
+            </button>
+          </div>
+
+          {/* Profile selector chips — only shown when there are multiple profiles */}
+          {profiles.length > 1 && (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                onClick={() => setSelectedProfileId('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition border ${
+                  selectedProfileId === 'all'
+                    ? 'bg-slate-700 text-white border-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:border-slate-200'
+                    : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700'
+                }`}
+              >
+                All
+              </button>
+              {profiles.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => setSelectedProfileId(p.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition border ${
+                    selectedProfileId === p.id
+                      ? 'text-white border-transparent'
+                      : 'bg-slate-100 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:border-slate-700 dark:hover:bg-slate-700'
+                  }`}
+                  style={
+                    selectedProfileId === p.id
+                      ? { backgroundColor: p.color, borderColor: p.color }
+                      : { color: p.color }
+                  }
+                >
+                  <span
+                    className="h-2 w-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: p.color }}
+                  />
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

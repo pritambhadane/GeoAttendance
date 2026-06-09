@@ -122,6 +122,7 @@ function AppContent() {
         return (
           <MonthlySummary
             logs={automation.logs}
+            profiles={automation.profiles}
           />
         );
     }
