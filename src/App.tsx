@@ -11,6 +11,8 @@ import SimulationPanel from './components/SimulationPanel';
 import AttendanceHistory from './components/AttendanceHistory';
 import ExportSuite from './components/ExportSuite';
 import MonthlySummary from './components/MonthlySummary';
+import { AttendanceServicePlugin, isNativeServiceAvailable } from './services/nativePlugin';
+import { getProfiles, getLogs } from './utils/storage';
 
 type Tab = 'dashboard' | 'profiles' | 'simulation' | 'history' | 'monthly' | 'export';
 
@@ -26,10 +28,39 @@ const TABS: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
 function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  // Live clock — ticks every second so header always shows current time (fix #1)
   const [nowClock, setNowClock] = useState(() => new Date());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
+
+  // ── FIX 1: Start native ForegroundService on app launch ──────────────────
+  // This is the fix for the core background tracking bug.
+  // Without this, the Java service never starts and nothing works when the
+  // screen is locked, app is minimized, or app is killed.
+  useEffect(() => {
+    if (!isNativeServiceAvailable()) return;
+
+    const bootstrap = async () => {
+      try {
+        // Seed the Java service with existing profiles and logs from localStorage
+        await AttendanceServicePlugin.syncProfiles({ profiles: JSON.stringify(getProfiles()) });
+        await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(getLogs()) });
+        // Start the ForegroundService — it will keep running even when screen locks
+        await AttendanceServicePlugin.startService();
+        console.log('[GeoAttend] Native ForegroundService started');
+      } catch (e) {
+        console.error('[GeoAttend] Failed to start native service:', e);
+      }
+    };
+
+    bootstrap();
+
+    // Stop service cleanly if component ever unmounts (won't happen in normal usage,
+    // but guards against double-starts in strict mode / dev)
+    return () => {
+      // Do NOT stop the service on unmount — it must persist in background.
+      // Only stop explicitly via UI if user disables tracking.
+    };
+  }, []);
 
   useEffect(() => {
     const id = setInterval(() => setNowClock(new Date()), 1000);
@@ -139,7 +170,6 @@ function AppContent() {
               </button>
             </div>
           </div>
-          {/* Fix #1: show live current time + last GPS scan time separately */}
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 dark:text-slate-400">
             <div className="flex items-center gap-1.5">
               <Clock className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400" />
