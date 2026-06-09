@@ -2,12 +2,12 @@ package com.geoattendance.app;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
-import com.equimapper.capacitor.plugin.backgroundgeolocation.BackgroundGeolocationPlugin;
+import com.equimaps.capacitor_background_geolocation.BackgroundGeolocation;
 
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(BackgroundGeolocationPlugin.class);
+        registerPlugin(BackgroundGeolocation.class);
         super.onCreate(savedInstanceState);
     }
 }

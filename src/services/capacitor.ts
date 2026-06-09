@@ -6,8 +6,9 @@
  */
 
 import { PositionData } from '../utils/storage';
+import { log } from '../utils/logger';
 
-// ─── Type declarations (avoid import errors before npm install) ───────────────
+// ─── Type declarations ────────────────────────────────────────────────────────
 
 type CapacitorGeolocation = {
   requestPermissions: () => Promise<{ location: string }>;
@@ -37,12 +38,10 @@ type CapacitorLocalNotifications = {
   checkPermissions: () => Promise<{ display: string }>;
 };
 
-// Background geolocation watcher callback shape
 type BGLocation = {
   latitude: number;
   longitude: number;
   accuracy: number;
-  // plugin returns time as number (ms epoch)
   time?: number;
 };
 
@@ -56,7 +55,7 @@ type BackgroundGeolocationPlugin = {
       distanceFilter?: number;
     },
     callback: (location: BGLocation | undefined, error: unknown) => void
-  ) => Promise<string>; // returns watcherId
+  ) => Promise<string>;
   removeWatcher: (opts: { id: string }) => Promise<void>;
 };
 
@@ -83,7 +82,9 @@ function getBGGeoPlugin(): BackgroundGeolocationPlugin | null {
     const cap = (window as any).Capacitor;
     if (cap?.isNativePlatform?.()) {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (window as any).Capacitor?.Plugins?.BackgroundGeolocation ?? null;
+      const plugin = (window as any).Capacitor?.Plugins?.BackgroundGeolocation ?? null;
+      log('info', 'BGPLUGIN', plugin ? 'BackgroundGeolocation plugin found' : 'BackgroundGeolocation plugin NOT found');
+      return plugin;
     }
   } catch { /* noop */ }
   return null;
@@ -117,18 +118,17 @@ export async function requestLocationPermission(): Promise<boolean> {
   if (plugin) {
     try {
       const result = await plugin.requestPermissions();
+      log('info', 'PERM', `Location permission: ${result.location}`);
       return result.location === 'granted';
-    } catch {
+    } catch (e) {
+      log('error', 'PERM', `Location permission error: ${e}`);
       return false;
     }
   }
-  // Web fallback – permission is requested implicitly by the browser
   return true;
 }
 
 export async function getNativePosition(retries = 3): Promise<PositionData> {
-  // B10 fix: retry on failure so a temporary GPS timeout doesn't leave currentPosition=null
-  // permanently, which would cause all ticks to return early doing nothing.
   const plugin = getGeoPlugin();
   let lastError: unknown;
 
@@ -136,6 +136,7 @@ export async function getNativePosition(retries = 3): Promise<PositionData> {
     try {
       if (plugin) {
         const pos = await plugin.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
+        log('gps', 'GPS', `Got position: ${pos.coords.latitude.toFixed(5)},${pos.coords.longitude.toFixed(5)} acc=${Math.round(pos.coords.accuracy)}m`);
         return {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
@@ -143,7 +144,6 @@ export async function getNativePosition(retries = 3): Promise<PositionData> {
           timestamp: pos.timestamp,
         };
       }
-      // Web fallback
       return await new Promise<PositionData>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(
           (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy, timestamp: p.timestamp }),
@@ -153,8 +153,8 @@ export async function getNativePosition(retries = 3): Promise<PositionData> {
       });
     } catch (e) {
       lastError = e;
+      log('warn', 'GPS', `Position attempt ${attempt} failed: ${e}`);
       if (attempt < retries) {
-        // Wait 2s before retrying (GPS may need warm-up time)
         await new Promise(r => setTimeout(r, 2000));
       }
     }
@@ -162,7 +162,6 @@ export async function getNativePosition(retries = 3): Promise<PositionData> {
   throw lastError;
 }
 
-// watcherId for background geolocation (native) or numeric id (web)
 let bgWatcherId: string | null = null;
 let webWatchId: number | null = null;
 
@@ -172,23 +171,23 @@ export async function startLocationWatch(
 ): Promise<void> {
   const bgPlugin = getBGGeoPlugin();
 
-  // ── Native: use BackgroundGeolocation so GPS works when screen is locked ──
   if (bgPlugin) {
     try {
+      log('info', 'BGWATCH', 'Starting BackgroundGeolocation watcher...');
       bgWatcherId = await bgPlugin.addWatcher(
         {
           backgroundMessage: 'GeoAttend is tracking your location for attendance',
           backgroundTitle: 'GeoAttend Active',
           requestPermissions: true,
           stale: false,
-          // B9 fix: distanceFilter removed — GPS fires on time interval too, not just on movement.
-          // Without this, stationary users never get position updates and tick runs on stale coords.
         },
         (location, error) => {
           if (error || !location) {
+            log('error', 'BGWATCH', `Watcher error: ${error}`);
             onError?.(error);
             return;
           }
+          log('gps', 'BGWATCH', `BG position: ${location.latitude.toFixed(5)},${location.longitude.toFixed(5)} acc=${Math.round(location.accuracy)}m`);
           callback({
             latitude: location.latitude,
             longitude: location.longitude,
@@ -197,17 +196,20 @@ export async function startLocationWatch(
           });
         }
       );
+      log('info', 'BGWATCH', `Watcher started, id=${bgWatcherId}`);
       return;
     } catch (e) {
-      console.warn('BackgroundGeolocation.addWatcher failed, falling back to watchPosition:', e);
+      log('error', 'BGWATCH', `addWatcher failed, falling back: ${e}`);
     }
   }
 
-  // ── Native fallback: standard watchPosition (no background support) ──
+  // Native fallback
   const geoPlugin = getGeoPlugin();
   if (geoPlugin) {
+    log('warn', 'BGWATCH', 'Using standard watchPosition (no background support)');
     const id = await geoPlugin.watchPosition({ enableHighAccuracy: true, timeout: 15000 }, (pos, err) => {
       if (err || !pos) { onError?.(err); return; }
+      log('gps', 'WATCH', `watchPosition: ${pos.coords.latitude.toFixed(5)},${pos.coords.longitude.toFixed(5)}`);
       callback({
         latitude: pos.coords.latitude,
         longitude: pos.coords.longitude,
@@ -219,7 +221,8 @@ export async function startLocationWatch(
     return;
   }
 
-  // ── Web fallback ──
+  // Web fallback
+  log('warn', 'BGWATCH', 'Using web navigator.geolocation (no background support)');
   webWatchId = navigator.geolocation.watchPosition(
     (p) => callback({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy, timestamp: p.timestamp }),
     onError,
@@ -228,6 +231,7 @@ export async function startLocationWatch(
 }
 
 export async function stopLocationWatch(): Promise<void> {
+  log('info', 'BGWATCH', 'Stopping location watch');
   const bgPlugin = getBGGeoPlugin();
   if (bgWatcherId !== null) {
     if (bgPlugin) {
@@ -259,12 +263,12 @@ export async function requestNotificationPermission(): Promise<boolean> {
       if (check.display === 'granted') { notifPermissionGranted = true; return true; }
       const result = await plugin.requestPermissions();
       notifPermissionGranted = result.display === 'granted';
+      log('info', 'PERM', `Notification permission: ${result.display}`);
       return notifPermissionGranted;
     } catch {
       return false;
     }
   }
-  // Web Notification API fallback
   if ('Notification' in window) {
     const perm = await Notification.requestPermission();
     notifPermissionGranted = perm === 'granted';
@@ -282,54 +286,42 @@ export async function sendLocalNotification(title: string, body: string): Promis
           id: ++notifIdCounter,
           title,
           body,
-          smallIcon: 'ic_stat_notify',   // must exist in android res/drawable
+          smallIcon: 'ic_stat_notify',
           iconColor: '#10b981',
         }],
       });
+      log('info', 'NOTIF', `Sent: ${title}`);
       return;
     } catch (e) {
-      console.warn('Native notification failed:', e);
+      log('warn', 'NOTIF', `Native notification failed: ${e}`);
     }
   }
-  // Web Notification API fallback
   if ('Notification' in window && Notification.permission === 'granted') {
     new Notification(title, { body, icon: '/icon.png' });
     return;
   }
-  // Last resort: browser alert (silent on mobile, but at least visible)
   console.info(`[Notification] ${title}: ${body}`);
 }
 
-// ─── Convenience wrappers used by useAutomation ───────────────────────────────
-
 export async function notifyCheckIn(profileName: string, time: string): Promise<void> {
-  await sendLocalNotification(
-    '✅ Checked In – ' + profileName,
-    `Auto check-in recorded at ${time}`
-  );
+  log('geo', 'CHECKIN', `Auto check-in: ${profileName} at ${time}`);
+  await sendLocalNotification('✅ Checked In – ' + profileName, `Auto check-in recorded at ${time}`);
 }
 
 export async function notifyCheckOut(profileName: string, time: string, durationMinutes: number): Promise<void> {
   const h = Math.floor(durationMinutes / 60);
   const m = Math.round(durationMinutes % 60);
   const dur = h > 0 ? `${h}h ${m}m` : `${m}m`;
-  await sendLocalNotification(
-    '🚪 Checked Out – ' + profileName,
-    `Auto check-out at ${time} · Duration: ${dur}`
-  );
+  log('geo', 'CHECKOUT', `Auto check-out: ${profileName} at ${time}, duration=${dur}`);
+  await sendLocalNotification('🚪 Checked Out – ' + profileName, `Auto check-out at ${time} · Duration: ${dur}`);
 }
 
 export async function notifyAbsent(profileName: string): Promise<void> {
-  await sendLocalNotification(
-    '⚠️ Marked Absent – ' + profileName,
-    `You were marked absent for ${profileName} today`
-  );
+  log('geo', 'ABSENT', `Marked absent: ${profileName}`);
+  await sendLocalNotification('⚠️ Marked Absent – ' + profileName, `You were marked absent for ${profileName} today`);
 }
 
 export async function notifyGeofenceExit(profileName: string, time: string): Promise<void> {
-  await sendLocalNotification(
-    '📍 Left Geofence – ' + profileName,
-    `Check-out triggered on geofence exit at ${time}`
-  );
+  log('geo', 'EXIT', `Geofence exit: ${profileName} at ${time}`);
+  await sendLocalNotification('📍 Left Geofence – ' + profileName, `Check-out triggered on geofence exit at ${time}`);
 }
-

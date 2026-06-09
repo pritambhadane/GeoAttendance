@@ -60,9 +60,9 @@
             </intent-filter>
         </receiver>
 
-        <!-- Keeps GPS alive when screen is locked (background geolocation) -->
+        <!-- ✅ FIXED: correct package for background geolocation foreground service -->
         <service
-            android:name="com.equimapper.capacitor.plugin.backgroundgeolocation.BackgroundGeolocationService"
+            android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
             android:foregroundServiceType="location"
             android:exported="false" />
 
