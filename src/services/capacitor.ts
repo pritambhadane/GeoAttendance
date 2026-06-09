@@ -126,25 +126,40 @@ export async function requestLocationPermission(): Promise<boolean> {
   return true;
 }
 
-export async function getNativePosition(): Promise<PositionData> {
+export async function getNativePosition(retries = 3): Promise<PositionData> {
+  // B10 fix: retry on failure so a temporary GPS timeout doesn't leave currentPosition=null
+  // permanently, which would cause all ticks to return early doing nothing.
   const plugin = getGeoPlugin();
-  if (plugin) {
-    const pos = await plugin.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
-    return {
-      latitude: pos.coords.latitude,
-      longitude: pos.coords.longitude,
-      accuracy: pos.coords.accuracy,
-      timestamp: pos.timestamp,
-    };
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      if (plugin) {
+        const pos = await plugin.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 });
+        return {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          timestamp: pos.timestamp,
+        };
+      }
+      // Web fallback
+      return await new Promise<PositionData>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(
+          (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy, timestamp: p.timestamp }),
+          reject,
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      });
+    } catch (e) {
+      lastError = e;
+      if (attempt < retries) {
+        // Wait 2s before retrying (GPS may need warm-up time)
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
   }
-  // Web fallback
-  return new Promise((resolve, reject) => {
-    navigator.geolocation.getCurrentPosition(
-      (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude, accuracy: p.coords.accuracy, timestamp: p.timestamp }),
-      reject,
-      { enableHighAccuracy: true, timeout: 10000 }
-    );
-  });
+  throw lastError;
 }
 
 // watcherId for background geolocation (native) or numeric id (web)
@@ -166,7 +181,8 @@ export async function startLocationWatch(
           backgroundTitle: 'GeoAttend Active',
           requestPermissions: true,
           stale: false,
-          distanceFilter: 10, // fire callback only if moved ≥10 m (saves battery)
+          // B9 fix: distanceFilter removed — GPS fires on time interval too, not just on movement.
+          // Without this, stationary users never get position updates and tick runs on stale coords.
         },
         (location, error) => {
           if (error || !location) {

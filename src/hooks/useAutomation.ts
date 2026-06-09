@@ -113,16 +113,22 @@ export function useAutomation() {
   }, [simulation.enabled]);
 
   // Derive tracking state from logs
+  // Fix B6: exclude absent logs from open session detection
   const getOpenSessions = useCallback(() => {
-    return logsRef.current.filter(l => l.checkOut === null);
+    return logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
   }, []);
 
   const getTrackingStatus = useCallback((): TrackingStatus => {
-    const open = logsRef.current.filter(l => l.checkOut === null);
+    // Fix B6: absent logs must not count as 'checked-in'
+    const open = logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
     if (open.length > 0) return 'checked-in';
     if (logsRef.current.length > 0) {
-      const latest = logsRef.current[logsRef.current.length - 1];
-      if (latest.checkOut) return 'checked-out';
+      // Find latest non-absent log for status
+      const nonAbsent = logsRef.current.filter(l => l.status !== 'absent');
+      if (nonAbsent.length > 0) {
+        const latest = nonAbsent[nonAbsent.length - 1];
+        if (latest.checkOut) return 'checked-out';
+      }
     }
     return 'idle';
   }, []);
@@ -151,14 +157,14 @@ export function useAutomation() {
         absentProcessedRef.current = loadProcessedFromStorage(ABSENT_PROCESSED_KEY, currentDateStr);
       }
 
-      // Clean old processed entries
-      processedRef.current = processedRef.current.filter(
-        p => p.date === currentDateStr && Math.abs(timeToMinutes(currentTimeStr) - timeToMinutes(p.timeKey.replace(/^(out:|exit:)/, ''))) < 2
-      );
-      // Keep exit and out keys for the full day — only time-based check-in keys need pruning
-      processedRef.current = processedRef.current.filter(
-        p => p.date === currentDateStr
-      );
+      // Fix B7: correct pruning — keep out: and exit: keys all day, only prune time-based check-in keys
+      processedRef.current = processedRef.current.filter(p => {
+        if (p.date !== currentDateStr) return false;
+        // out: and exit: keys are kept for the full day — never prune them
+        if (p.timeKey.startsWith('out:') || p.timeKey.startsWith('exit:')) return true;
+        // time-based check-in keys (HH:mm) pruned after ±2 min window passes
+        return Math.abs(timeToMinutes(currentTimeStr) - timeToMinutes(p.timeKey)) < 2;
+      });
       absentProcessedRef.current = absentProcessedRef.current.filter(
         p => p.date === currentDateStr
       );
@@ -170,8 +176,12 @@ export function useAutomation() {
         const dist = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
         const isWithinRadius = dist <= profile.radius;
 
+        // Fix B1+B2: exclude absent logs from hasOpenSession.
+        // absent logs have checkOut=null but are NOT real open sessions.
+        // Without this guard: auto checkout modifies absent log, manual check-in is blocked.
         const hasOpenSession = updatedLogs.some(
-          l => l.profileId === profile.id && l.checkOut === null && l.date === currentDateStr
+          l => l.profileId === profile.id && l.checkOut === null
+            && l.date === currentDateStr && l.status !== 'absent'
         );
 
         // ── AUTO CHECK-IN ────────────────────────────────────────────────────
@@ -185,11 +195,27 @@ export function useAutomation() {
             ? (currentMinutesNow >= checkInMinutesProfile && currentMinutesNow <= checkInMinutesProfile + windowMinutes)
             : Math.abs(currentMinutesNow - checkInMinutesProfile) <= windowMinutes;
 
+          // Fix B3: if user already had a completed session today (e.g. after geofence exit
+          // closed it), allow re-check-in any time they return to the location.
+          // But if absent was marked, do NOT auto re-check-in — require manual check-in.
+          const hadRealSessionToday = updatedLogs.some(
+            l => l.profileId === profile.id && l.date === currentDateStr && l.status !== 'absent'
+          );
+
+          // Re-entry key scoped to current minute — deduplicates within the same minute
+          const reEntryKey = `reentry:${currentTimeStr.slice(0, 5)}`;
+          const alreadyProcessedReEntry = processedRef.current.some(
+            p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === reEntryKey
+          );
           const alreadyProcessed = processedRef.current.some(
             p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === profile.checkInTime
           );
 
-          if (withinCheckInWindow && !alreadyProcessed) {
+          const shouldCheckIn = hadRealSessionToday
+            ? !alreadyProcessedReEntry          // re-entry: any time, deduplicate by minute
+            : withinCheckInWindow && !alreadyProcessed; // first check-in: time window only
+
+          if (shouldCheckIn) {
             const newLog: AttendanceLog = {
               id: generateId(),
               profileId: profile.id,
@@ -207,7 +233,7 @@ export function useAutomation() {
             processedRef.current.push({
               profileId: profile.id,
               date: currentDateStr,
-              timeKey: profile.checkInTime,
+              timeKey: hadRealSessionToday ? reEntryKey : profile.checkInTime,
             });
             saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
             notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
@@ -285,7 +311,10 @@ export function useAutomation() {
         // ── MARK ABSENT ──────────────────────────────────────────────────────
         const checkInMinutes = timeToMinutes(profile.checkInTime);
         const currentMinutes = timeToMinutes(currentTimeStr);
-        if (currentMinutes > checkInMinutes + profile.markAbsentAfter && !hasOpenSession) {
+        // Fix B5: never mark absent if user is physically within the geofence radius.
+        // Previously, a user arriving at 09:31 (1 min past catch-up window) would get
+        // marked absent even though they were standing at the location.
+        if (currentMinutes > checkInMinutes + profile.markAbsentAfter && !hasOpenSession && !isWithinRadius) {
           const existingLog = updatedLogs.find(
             l => l.profileId === profile.id && l.date === currentDateStr
           );
@@ -328,6 +357,49 @@ export function useAutomation() {
 
     // Run catch-up scan on mount (fix #4)
     tick(true);
+
+    // Fix B4: close any sessions from a previous run that missed their checkout window.
+    // This handles the case where the app was killed exactly at checkout time.
+    // Any open (non-absent) session whose checkOut time has already passed gets closed now.
+    const closeStaleOpenSessions = () => {
+      const now = getCurrentTime();
+      const currentDateStr = dateToStr(now);
+      const currentMins = timeToMinutes(timeToStr(now));
+      let updated = [...logsRef.current];
+      let changed = false;
+
+      for (const profile of profiles.filter(p => p.active)) {
+        const openLog = updated.find(
+          l => l.profileId === profile.id && l.checkOut === null
+            && l.status !== 'absent' && l.date === currentDateStr
+        );
+        if (!openLog) continue;
+
+        const checkOutMins = timeToMinutes(profile.checkOutTime);
+        // If checkout time has passed by more than 1 min (outside normal window), close it now
+        if (currentMins > checkOutMins + 1) {
+          const checkOutMoment = new Date(now);
+          checkOutMoment.setHours(Math.floor(checkOutMins / 60), checkOutMins % 60, 0, 0);
+          const duration = Math.round((checkOutMoment.getTime() - new Date(openLog.checkIn).getTime()) / 60000);
+          const expectedMinutes = profile.expectedHoursPerDay * 60;
+          const attended = duration >= expectedMinutes * 0.5;
+          updated = updated.map(l =>
+            l.id === openLog.id
+              ? { ...l, checkOut: checkOutMoment.toISOString(), duration: Math.max(0, duration), attended }
+              : l
+          );
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        setLogs(updated);
+        logsRef.current = updated;
+        saveLogs(updated);
+      }
+    };
+    closeStaleOpenSessions();
+
     // Then run normal ticks
     const id = setInterval(() => tick(false), 5000);
     return () => clearInterval(id);
@@ -371,7 +443,11 @@ export function useAutomation() {
     if (!profile) return;
     const now = getCurrentTime();
     const currentDateStr = dateToStr(now);
-    const alreadyOpen = logsRef.current.some(l => l.profileId === profileId && l.checkOut === null && l.date === currentDateStr);
+    // Fix B2: exclude absent logs — absent.checkOut=null must not block manual check-in
+    const alreadyOpen = logsRef.current.some(
+      l => l.profileId === profileId && l.checkOut === null
+        && l.date === currentDateStr && l.status !== 'absent'
+    );
     if (alreadyOpen) return;
 
     const newLog: AttendanceLog = {
