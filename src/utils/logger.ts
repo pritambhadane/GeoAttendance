@@ -16,7 +16,8 @@ export interface LogEntry {
 }
 
 function now(): string {
-  return new Date().toISOString();
+  return new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })
+    + ' IST';
 }
 
 function load(): LogEntry[] {

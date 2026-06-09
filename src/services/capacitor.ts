@@ -173,6 +173,11 @@ export async function startLocationWatch(
 
   if (bgPlugin) {
     try {
+      // Prevent duplicate watcher if already running
+      if (bgWatcherId !== null) {
+        log('warn', 'BGWATCH', 'Watcher already running, skipping');
+        return;
+      }
       log('info', 'BGWATCH', 'Starting BackgroundGeolocation watcher...');
       bgWatcherId = await bgPlugin.addWatcher(
         {
