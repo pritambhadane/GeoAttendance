@@ -52,6 +52,21 @@
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
 
+        <!-- ── NEW: Native attendance foreground service ─────────────────── -->
+        <service
+            android:name=".AttendanceForegroundService"
+            android:foregroundServiceType="location"
+            android:exported="false" />
+
+        <!-- ── NEW: Boot receiver — restarts service after reboot ─────────── -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Restores scheduled notifications after phone reboot -->
         <receiver
             android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"
@@ -61,12 +76,14 @@
             </intent-filter>
         </receiver>
 
-        <!-- ✅ FIXED: correct package for background geolocation foreground service -->
+        <!-- REMOVED: BackgroundGeolocationService — replaced by AttendanceForegroundService -->
+        <!--
         <service
-    android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
-    android:foregroundServiceType="location"
-    android:exported="false"
-    tools:replace="android:exported" />
+            android:name="com.equimaps.capacitor_background_geolocation.BackgroundGeolocationService"
+            android:foregroundServiceType="location"
+            android:exported="false"
+            tools:replace="android:exported" />
+        -->
 
     </application>
 

@@ -2,12 +2,13 @@ package com.geoattendance.app;
 
 import android.os.Bundle;
 import com.getcapacitor.BridgeActivity;
-import com.equimaps.capacitor_background_geolocation.BackgroundGeolocation;
 
 public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
-        registerPlugin(BackgroundGeolocation.class);
+        // Register our native attendance plugin
+        // (BackgroundGeolocation plugin REMOVED — replaced by AttendanceForegroundService)
+        registerPlugin(AttendancePlugin.class);
         super.onCreate(savedInstanceState);
     }
 }

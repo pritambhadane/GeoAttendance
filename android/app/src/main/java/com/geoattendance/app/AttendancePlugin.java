@@ -1,0 +1,318 @@
+package com.geoattendance.app;
+
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.util.Log;
+
+import androidx.core.content.ContextCompat;
+
+import com.getcapacitor.JSArray;
+import com.getcapacitor.JSObject;
+import com.getcapacitor.Plugin;
+import com.getcapacitor.PluginCall;
+import com.getcapacitor.PluginMethod;
+import com.getcapacitor.annotation.CapacitorPlugin;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+/**
+ * AttendancePlugin — Capacitor bridge between the native Java service and React UI.
+ *
+ * Called from React via:
+ *   import { AttendanceServicePlugin } from './services/nativePlugin';
+ *
+ * Methods:
+ *   startService()       — start ForegroundService
+ *   stopService()        — stop ForegroundService
+ *   syncProfiles(data)   — push profiles from React localStorage → SharedPreferences
+ *   syncLogs(data)       — push existing logs from React localStorage → SharedPreferences
+ *   getState()           — read current snapshot (checkedIn, todayStatus, totalMinutesToday)
+ *   getLogs()            — read full log array from SharedPreferences
+ *   manualCheckIn(id)    — force a check-in for a profile
+ *   manualCheckOut(id)   — force a check-out for a profile
+ */
+@CapacitorPlugin(name = "AttendanceService")
+public class AttendancePlugin extends Plugin {
+
+    private static final String TAG = "AttendPlugin";
+
+    // ── Start / stop ─────────────────────────────────────────────────────────
+
+    @PluginMethod
+    public void startService(PluginCall call) {
+        try {
+            Intent intent = new Intent(getContext(), AttendanceForegroundService.class);
+            intent.setAction("START");
+            ContextCompat.startForegroundService(getContext(), intent);
+            Log.i(TAG, "startService called from JS");
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to start service: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void stopService(PluginCall call) {
+        try {
+            Intent intent = new Intent(getContext(), AttendanceForegroundService.class);
+            getContext().stopService(intent);
+            Log.i(TAG, "stopService called from JS");
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Failed to stop service: " + e.getMessage());
+        }
+    }
+
+    // ── Profile / log sync from React → Java ─────────────────────────────────
+
+    /**
+     * Call this once on app launch (and after any profile save) to push
+     * the current profiles from React's localStorage into SharedPreferences
+     * so the Java service can read them without touching the WebView.
+     *
+     * Usage from React:
+     *   AttendanceServicePlugin.syncProfiles({ profiles: JSON.stringify(getProfiles()) });
+     */
+    @PluginMethod
+    public void syncProfiles(PluginCall call) {
+        String profilesJson = call.getString("profiles", "[]");
+        getContext()
+                .getSharedPreferences(AttendanceForegroundService.PREFS_STATE, Context.MODE_PRIVATE)
+                .edit()
+                .putString("profiles", profilesJson)
+                .apply();
+        Log.i(TAG, "Profiles synced to SharedPreferences");
+        call.resolve();
+    }
+
+    /**
+     * Call once on app launch to seed Java's log store from React's localStorage.
+     * After this, Java is the authoritative writer; React reads via getLogs().
+     *
+     * Usage from React:
+     *   AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(getLogs()) });
+     */
+    @PluginMethod
+    public void syncLogs(PluginCall call) {
+        String logsJson = call.getString("logs", "[]");
+        getContext()
+                .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE)
+                .edit()
+                .putString("logs", logsJson)
+                .apply();
+        Log.i(TAG, "Logs seeded into SharedPreferences from React");
+        call.resolve();
+    }
+
+    // ── Read state / logs ─────────────────────────────────────────────────────
+
+    /**
+     * Returns the compact state snapshot written by the service after every tick.
+     * React polls this every 10s to update its UI.
+     *
+     * Returns:
+     *   checkedIn: boolean
+     *   todayStatus: "idle" | "checked-in" | "checked-out"
+     *   totalMinutesToday: number
+     *   lastUpdated: number (epoch ms)
+     */
+    @PluginMethod
+    public void getState(PluginCall call) {
+        SharedPreferences prefs = getContext()
+                .getSharedPreferences(AttendanceForegroundService.PREFS_STATE, Context.MODE_PRIVATE);
+
+        JSObject ret = new JSObject();
+        ret.put("checkedIn",        prefs.getBoolean("checkedIn", false));
+        ret.put("todayStatus",      prefs.getString("todayStatus", "idle"));
+        ret.put("totalMinutesToday",prefs.getInt("totalMinutesToday", 0));
+        ret.put("lastUpdated",      prefs.getLong("lastUpdated", 0));
+        call.resolve(ret);
+    }
+
+    /**
+     * Returns the full attendance log array stored by the service.
+     * React reads this to render AttendanceHistory and MonthlySummary.
+     *
+     * Returns: { logs: string }  (JSON string — parse on JS side)
+     */
+    @PluginMethod
+    public void getLogs(PluginCall call) {
+        SharedPreferences prefs = getContext()
+                .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE);
+        String logsJson = prefs.getString("logs", "[]");
+
+        JSObject ret = new JSObject();
+        ret.put("logs", logsJson);
+        call.resolve(ret);
+    }
+
+    // ── Manual overrides ──────────────────────────────────────────────────────
+
+    /**
+     * Force a manual check-in for the given profileId.
+     * Mirrors manualCheckIn() in useAutomation.ts.
+     *
+     * Usage: AttendanceServicePlugin.manualCheckIn({ profileId: "abc123" });
+     */
+    @PluginMethod
+    public void manualCheckIn(PluginCall call) {
+        String profileId = call.getString("profileId");
+        if (profileId == null || profileId.isEmpty()) {
+            call.reject("profileId required");
+            return;
+        }
+
+        try {
+            SharedPreferences statePrefs = getContext()
+                    .getSharedPreferences(AttendanceForegroundService.PREFS_STATE, Context.MODE_PRIVATE);
+            SharedPreferences logsPrefs = getContext()
+                    .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE);
+
+            String profilesJson = statePrefs.getString("profiles", "[]");
+            JSONArray profiles = new JSONArray(profilesJson);
+            JSONObject profile = null;
+            for (int i = 0; i < profiles.length(); i++) {
+                JSONObject p = profiles.getJSONObject(i);
+                if (profileId.equals(p.getString("id"))) { profile = p; break; }
+            }
+            if (profile == null) { call.reject("Profile not found"); return; }
+
+            String logsJson = logsPrefs.getString("logs", "[]");
+            JSONArray logs = new JSONArray(logsJson);
+
+            java.util.Calendar now = java.util.Calendar.getInstance(
+                    java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+            String dateStr = String.format(java.util.Locale.US, "%04d-%02d-%02d",
+                    now.get(java.util.Calendar.YEAR),
+                    now.get(java.util.Calendar.MONTH) + 1,
+                    now.get(java.util.Calendar.DAY_OF_MONTH));
+
+            // Fix B2: check absent-exclusive
+            for (int i = 0; i < logs.length(); i++) {
+                JSONObject l = logs.getJSONObject(i);
+                if (profileId.equals(l.optString("profileId"))
+                        && dateStr.equals(l.optString("date"))
+                        && l.isNull("checkOut")
+                        && !"absent".equals(l.optString("status"))) {
+                    call.reject("Already checked in");
+                    return;
+                }
+            }
+
+            java.text.SimpleDateFormat sdf =
+                    new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'+05:30'", java.util.Locale.US);
+            sdf.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+
+            JSONObject newLog = new JSONObject();
+            newLog.put("id", Long.toString(System.currentTimeMillis(), 36)
+                    + java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 9));
+            newLog.put("profileId", profileId);
+            newLog.put("profileName", profile.getString("name"));
+            newLog.put("date", dateStr);
+            newLog.put("checkIn", sdf.format(now.getTime()));
+            newLog.put("checkOut", JSONObject.NULL);
+            newLog.put("duration", JSONObject.NULL);
+            newLog.put("status", "manual");
+            newLog.put("profileColor", profile.optString("color", "#10b981"));
+            newLog.put("attended", true);
+
+            JSONArray updated = new JSONArray();
+            for (int i = 0; i < logs.length(); i++) updated.put(logs.getJSONObject(i));
+            updated.put(newLog);
+
+            logsPrefs.edit().putString("logs", updated.toString()).apply();
+
+            Log.i(TAG, "Manual check-in: " + profile.getString("name"));
+            JSObject ret = new JSObject();
+            ret.put("success", true);
+            call.resolve(ret);
+
+        } catch (JSONException e) {
+            call.reject("manualCheckIn error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Force a manual check-out for the given profileId (or all open sessions if omitted).
+     * Usage: AttendanceServicePlugin.manualCheckOut({ profileId: "abc123" });
+     *        AttendanceServicePlugin.manualCheckOut({});  // closes all
+     */
+    @PluginMethod
+    public void manualCheckOut(PluginCall call) {
+        String profileId = call.getString("profileId"); // nullable = close all
+
+        try {
+            SharedPreferences statePrefs = getContext()
+                    .getSharedPreferences(AttendanceForegroundService.PREFS_STATE, Context.MODE_PRIVATE);
+            SharedPreferences logsPrefs = getContext()
+                    .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE);
+
+            String profilesJson = statePrefs.getString("profiles", "[]");
+            JSONArray profiles = new JSONArray(profilesJson);
+
+            String logsJson = logsPrefs.getString("logs", "[]");
+            JSONArray logs = new JSONArray(logsJson);
+
+            java.util.Calendar now = java.util.Calendar.getInstance(
+                    java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+            String dateStr = String.format(java.util.Locale.US, "%04d-%02d-%02d",
+                    now.get(java.util.Calendar.YEAR),
+                    now.get(java.util.Calendar.MONTH) + 1,
+                    now.get(java.util.Calendar.DAY_OF_MONTH));
+            java.text.SimpleDateFormat sdf =
+                    new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'+05:30'", java.util.Locale.US);
+            sdf.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+
+            boolean changed = false;
+            for (int i = 0; i < logs.length(); i++) {
+                JSONObject l = logs.getJSONObject(i);
+                if (!l.isNull("checkOut")) continue;
+                if ("absent".equals(l.optString("status"))) continue;
+                if (!dateStr.equals(l.optString("date"))) continue;
+                if (profileId != null && !profileId.equals(l.optString("profileId"))) continue;
+
+                long checkInMs;
+                try {
+                    java.text.SimpleDateFormat p = new java.text.SimpleDateFormat(
+                            "yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+                    p.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
+                    String trimmed = l.getString("checkIn").replaceAll("(\\+[0-9:]+|Z)$", "");
+                    checkInMs = p.parse(trimmed).getTime();
+                } catch (Exception ex) { checkInMs = now.getTimeInMillis() - 3_600_000; }
+
+                long duration = Math.round((now.getTimeInMillis() - checkInMs) / 60000.0);
+
+                // Look up expected hours for this profile
+                double expectedHrs = 8.0;
+                for (int j = 0; j < profiles.length(); j++) {
+                    JSONObject p = profiles.getJSONObject(j);
+                    if (l.optString("profileId").equals(p.getString("id"))) {
+                        expectedHrs = p.optDouble("expectedHoursPerDay", 8.0);
+                        break;
+                    }
+                }
+                long expectedMins = Math.round(expectedHrs * 60);
+
+                l.put("checkOut", sdf.format(now.getTime()));
+                l.put("duration", duration);
+                l.put("attended", duration >= expectedMins * 0.5);
+                logs.put(i, l);
+                changed = true;
+            }
+
+            if (changed) {
+                logsPrefs.edit().putString("logs", logs.toString()).apply();
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("success", changed);
+            call.resolve(ret);
+
+        } catch (JSONException e) {
+            call.reject("manualCheckOut error: " + e.getMessage());
+        }
+    }
+}
