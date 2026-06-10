@@ -3,6 +3,9 @@ package com.geoattendance.app;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.net.Uri;
+import android.os.Build;
+import android.os.PowerManager;
 import android.util.Log;
 
 import androidx.core.content.ContextCompat;
@@ -311,8 +314,60 @@ public class AttendancePlugin extends Plugin {
             ret.put("success", changed);
             call.resolve(ret);
 
-        } catch (JSONException e) {
-            call.reject("manualCheckOut error: " + e.getMessage());
+    /**
+     * Check if the app already has battery optimization exemption.
+     * Returns: { exempted: boolean }
+     * React calls this on launch to decide whether to prompt the user.
+     */
+    @PluginMethod
+    public void isBatteryExempted(PluginCall call) {
+        JSObject ret = new JSObject();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            boolean exempted = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+            ret.put("exempted", exempted);
+        } else {
+            ret.put("exempted", true); // not applicable below API 23
+        }
+        call.resolve(ret);
+    }
+
+    /**
+     * Open the system dialog asking the user to exempt this app from battery optimisation.
+     * On Android 6+ this launches ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS directly for
+     * our package (allowed without Play Store restrictions because we are a location tracking
+     * app that discloses this in the manifest via foregroundServiceType=location).
+     *
+     * Call this only once, after the user has acknowledged a rationale dialog in React.
+     * Usage: AttendanceServicePlugin.requestBatteryExemption();
+     */
+    @PluginMethod
+    public void requestBatteryExemption(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+            if (pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName())) {
+                JSObject ret = new JSObject();
+                ret.put("alreadyExempted", true);
+                call.resolve(ret);
+                return;
+            }
+            try {
+                Intent intent = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+                Log.i(TAG, "Battery optimisation exemption dialog launched");
+                JSObject ret = new JSObject();
+                ret.put("alreadyExempted", false);
+                call.resolve(ret);
+            } catch (Exception e) {
+                Log.e(TAG, "requestBatteryExemption failed: " + e.getMessage());
+                call.reject("Could not open battery settings: " + e.getMessage());
+            }
+        } else {
+            JSObject ret = new JSObject();
+            ret.put("alreadyExempted", true); // not applicable below API 23
+            call.resolve(ret);
         }
     }
 }

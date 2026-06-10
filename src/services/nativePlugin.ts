@@ -33,6 +33,11 @@ export interface NativeLogsResult {
   logs: string; // JSON string — parse with JSON.parse()
 }
 
+export interface BatteryExemptionResult {
+  exempted?: boolean;
+  alreadyExempted?: boolean;
+}
+
 // ── Plugin accessor ───────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -128,5 +133,26 @@ export const AttendanceServicePlugin = {
     const p = getPlugin();
     if (!p) return Promise.resolve({ success: false });
     return p.manualCheckOut(opts);
+  },
+
+  /**
+   * Returns whether the app is already exempt from battery optimisation.
+   * Call on launch — if false, show a rationale then call requestBatteryExemption().
+   */
+  async isBatteryExempted(): Promise<BatteryExemptionResult> {
+    const p = getPlugin();
+    if (!p) return { exempted: true };
+    return p.isBatteryExempted();
+  },
+
+  /**
+   * Opens the system dialog to exempt this app from battery optimisation.
+   * Only call this after showing the user a rationale dialog.
+   * No-op on iOS or web.
+   */
+  async requestBatteryExemption(): Promise<BatteryExemptionResult> {
+    const p = getPlugin();
+    if (!p) return { alreadyExempted: true };
+    return p.requestBatteryExemption();
   },
 };

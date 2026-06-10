@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import {
   LayoutDashboard, MapPin, Sliders, Calendar, Share2,
   Menu, X, Radio, Sun, Moon, BarChart3, Crosshair, Clock,
+  BatteryWarning,
 } from 'lucide-react';
 import { ThemeProvider, useTheme } from './hooks/useTheme';
 import { useAutomation } from './hooks/useAutomation';
@@ -29,13 +30,11 @@ function AppContent() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [nowClock, setNowClock] = useState(() => new Date());
+  const [showBatteryBanner, setShowBatteryBanner] = useState(false);
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
 
-  // ── FIX 1: Start native ForegroundService on app launch ──────────────────
-  // This is the fix for the core background tracking bug.
-  // Without this, the Java service never starts and nothing works when the
-  // screen is locked, app is minimized, or app is killed.
+  // ── Start native ForegroundService on app launch ─────────────────────────
   useEffect(() => {
     if (!isNativeServiceAvailable()) return;
 
@@ -54,12 +53,32 @@ function AppContent() {
 
     bootstrap();
 
-    // Stop service cleanly if component ever unmounts (won't happen in normal usage,
-    // but guards against double-starts in strict mode / dev)
     return () => {
       // Do NOT stop the service on unmount — it must persist in background.
-      // Only stop explicitly via UI if user disables tracking.
     };
+  }, []);
+
+  // ── Battery optimisation exemption check (Bug 2 fix) ─────────────────────
+  // Without being whitelisted, Android kills the ForegroundService within
+  // 20–60 minutes on most phones. We check once on launch and show a banner
+  // if the user needs to grant exemption.
+  useEffect(() => {
+    if (!isNativeServiceAvailable()) return;
+
+    const checkBattery = async () => {
+      try {
+        const result = await AttendanceServicePlugin.isBatteryExempted();
+        if (!result.exempted) {
+          setShowBatteryBanner(true);
+        }
+      } catch (e) {
+        console.warn('[GeoAttend] Battery exemption check failed:', e);
+      }
+    };
+
+    // Small delay so it doesn't fire before the service finishes starting
+    const t = setTimeout(checkBattery, 3000);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -122,7 +141,6 @@ function AppContent() {
         return (
           <MonthlySummary
             logs={automation.logs}
-            profiles={automation.profiles}
           />
         );
     }
@@ -130,6 +148,33 @@ function AppContent() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
+
+      {/* Battery optimisation banner — shown once if not whitelisted */}
+      {showBatteryBanner && (
+        <div className="bg-amber-50 border-b border-amber-200 dark:bg-amber-950/60 dark:border-amber-800 px-4 py-2.5 flex items-center gap-3">
+          <BatteryWarning className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />
+          <p className="text-xs text-amber-800 dark:text-amber-300 flex-1 leading-snug">
+            <strong>Battery optimisation is ON.</strong> Android may stop background tracking within an hour. Tap to disable it for this app.
+          </p>
+          <button
+            onClick={async () => {
+              await AttendanceServicePlugin.requestBatteryExemption();
+              setShowBatteryBanner(false);
+            }}
+            className="text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900 px-3 py-1 rounded-lg shrink-0 hover:bg-amber-200 dark:hover:bg-amber-800 transition"
+          >
+            Fix now
+          </button>
+          <button
+            onClick={() => setShowBatteryBanner(false)}
+            className="p-1 text-amber-500 hover:text-amber-700 dark:hover:text-amber-300"
+            title="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Top Header */}
       <header className="sticky top-0 z-40 bg-white/80 backdrop-blur-xl border-b border-slate-200 dark:bg-slate-900/80 dark:border-slate-800">
         <div className="max-w-2xl mx-auto px-4 py-3">

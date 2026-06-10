@@ -199,7 +199,19 @@ export function useAutomation() {
   }, []);
 
   // ── Core automation tick ──────────────────────────────────────────────────
+  // When running as a native Android APK, AttendanceForegroundService.java owns
+  // ALL tick logic (GPS poll, geofence check, check-in/out/absent writes).
+  // Running the JS tick simultaneously causes duplicate records and race conditions.
+  // We skip the entire JS tick and rely solely on the native service + the
+  // mergeNativeLogs() poll above to keep the UI in sync.
   useEffect(() => {
+    if (isNativeServiceAvailable()) {
+      // Java service is running — JS tick is intentionally disabled.
+      // The mergeNativeLogs() interval (above) keeps React state up-to-date.
+      return;
+    }
+
+    // ── Web / browser fallback tick (no native service available) ────────────
     const tick = (isCatchUp = false) => {
       const now = getCurrentTime();
       const currentTimeStr = timeToStr(now);

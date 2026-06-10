@@ -68,6 +68,7 @@ public class AttendanceForegroundService extends Service {
 
     // ── GPS ──────────────────────────────────────────────────────────────────
     private LocationManager locationManager;
+    private LocationListener locationListener;   // kept as field so stopGPS() can removeUpdates()
     private Location lastLocation;
     private static final long   GPS_MIN_TIME_MS   = 30_000;  // 30 s
     private static final float  GPS_MIN_DISTANCE_M = 10f;    // 10 m
@@ -131,10 +132,18 @@ public class AttendanceForegroundService extends Service {
     // ─────────────────────────────────────────────────────────────────────────
 
     private void startGPS() {
+        // Guard against double-registration on START_STICKY restarts.
+        // removeUpdates is a no-op if listener was never registered.
+        if (locationListener != null && locationManager != null) {
+            locationManager.removeUpdates(locationListener);
+            Log.d(TAG, "GPS: removed stale listener before re-registering");
+        }
+
         try {
             locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
 
-            LocationListener listener = new LocationListener() {
+            // Assign to field so stopGPS() can call removeUpdates() correctly.
+            locationListener = new LocationListener() {
                 @Override
                 public void onLocationChanged(@NonNull Location location) {
                     lastLocation = location;
@@ -154,11 +163,11 @@ public class AttendanceForegroundService extends Service {
                     LocationManager.GPS_PROVIDER,
                     GPS_MIN_TIME_MS,
                     GPS_MIN_DISTANCE_M,
-                    listener,
+                    locationListener,
                     Looper.getMainLooper()
             );
 
-            // Seed with last known location so first tick isn't blind (fix B10 equivalent)
+            // Seed with last known location so first tick isn't blind
             //noinspection MissingPermission
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last != null) lastLocation = last;
@@ -170,9 +179,13 @@ public class AttendanceForegroundService extends Service {
     }
 
     private void stopGPS() {
-        // LocationManager.removeUpdates requires a listener reference; we use a field-less
-        // approach here — for production, keep the listener in a field and call removeUpdates(listener).
-        Log.i(TAG, "GPS stopped");
+        if (locationManager != null && locationListener != null) {
+            locationManager.removeUpdates(locationListener);
+            Log.i(TAG, "GPS stopped — listener unregistered");
+        } else {
+            Log.i(TAG, "GPS stopGPS called but nothing to remove");
+        }
+        locationListener = null;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
