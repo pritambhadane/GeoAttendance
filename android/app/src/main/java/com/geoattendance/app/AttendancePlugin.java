@@ -24,18 +24,17 @@ import org.json.JSONObject;
 /**
  * AttendancePlugin — Capacitor bridge between the native Java service and React UI.
  *
- * Called from React via:
- *   import { AttendanceServicePlugin } from './services/nativePlugin';
- *
  * Methods:
- *   startService()       — start ForegroundService
- *   stopService()        — stop ForegroundService
- *   syncProfiles(data)   — push profiles from React localStorage → SharedPreferences
- *   syncLogs(data)       — push existing logs from React localStorage → SharedPreferences
- *   getState()           — read current snapshot (checkedIn, todayStatus, totalMinutesToday)
- *   getLogs()            — read full log array from SharedPreferences
- *   manualCheckIn(id)    — force a check-in for a profile
- *   manualCheckOut(id)   — force a check-out for a profile
+ *   startService()              — start ForegroundService
+ *   stopService()               — stop ForegroundService
+ *   syncProfiles(data)          — push profiles from React localStorage → SharedPreferences
+ *   syncLogs(data)              — push existing logs from React localStorage → SharedPreferences
+ *   getState()                  — read current snapshot (checkedIn, todayStatus, totalMinutesToday)
+ *   getLogs()                   — read full log array from SharedPreferences
+ *   manualCheckIn(id)           — force a check-in for a profile
+ *   manualCheckOut(id)          — force a check-out for a profile
+ *   isBatteryExempted()         — check if app is exempt from battery optimisation
+ *   requestBatteryExemption()   — open system dialog to request exemption
  */
 @CapacitorPlugin(name = "AttendanceService")
 public class AttendancePlugin extends Plugin {
@@ -71,14 +70,6 @@ public class AttendancePlugin extends Plugin {
 
     // ── Profile / log sync from React → Java ─────────────────────────────────
 
-    /**
-     * Call this once on app launch (and after any profile save) to push
-     * the current profiles from React's localStorage into SharedPreferences
-     * so the Java service can read them without touching the WebView.
-     *
-     * Usage from React:
-     *   AttendanceServicePlugin.syncProfiles({ profiles: JSON.stringify(getProfiles()) });
-     */
     @PluginMethod
     public void syncProfiles(PluginCall call) {
         String profilesJson = call.getString("profiles", "[]");
@@ -91,13 +82,6 @@ public class AttendancePlugin extends Plugin {
         call.resolve();
     }
 
-    /**
-     * Call once on app launch to seed Java's log store from React's localStorage.
-     * After this, Java is the authoritative writer; React reads via getLogs().
-     *
-     * Usage from React:
-     *   AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(getLogs()) });
-     */
     @PluginMethod
     public void syncLogs(PluginCall call) {
         String logsJson = call.getString("logs", "[]");
@@ -112,35 +96,19 @@ public class AttendancePlugin extends Plugin {
 
     // ── Read state / logs ─────────────────────────────────────────────────────
 
-    /**
-     * Returns the compact state snapshot written by the service after every tick.
-     * React polls this every 10s to update its UI.
-     *
-     * Returns:
-     *   checkedIn: boolean
-     *   todayStatus: "idle" | "checked-in" | "checked-out"
-     *   totalMinutesToday: number
-     *   lastUpdated: number (epoch ms)
-     */
     @PluginMethod
     public void getState(PluginCall call) {
         SharedPreferences prefs = getContext()
                 .getSharedPreferences(AttendanceForegroundService.PREFS_STATE, Context.MODE_PRIVATE);
 
         JSObject ret = new JSObject();
-        ret.put("checkedIn",        prefs.getBoolean("checkedIn", false));
-        ret.put("todayStatus",      prefs.getString("todayStatus", "idle"));
-        ret.put("totalMinutesToday",prefs.getInt("totalMinutesToday", 0));
-        ret.put("lastUpdated",      prefs.getLong("lastUpdated", 0));
+        ret.put("checkedIn",         prefs.getBoolean("checkedIn", false));
+        ret.put("todayStatus",       prefs.getString("todayStatus", "idle"));
+        ret.put("totalMinutesToday", prefs.getInt("totalMinutesToday", 0));
+        ret.put("lastUpdated",       prefs.getLong("lastUpdated", 0));
         call.resolve(ret);
     }
 
-    /**
-     * Returns the full attendance log array stored by the service.
-     * React reads this to render AttendanceHistory and MonthlySummary.
-     *
-     * Returns: { logs: string }  (JSON string — parse on JS side)
-     */
     @PluginMethod
     public void getLogs(PluginCall call) {
         SharedPreferences prefs = getContext()
@@ -154,12 +122,6 @@ public class AttendancePlugin extends Plugin {
 
     // ── Manual overrides ──────────────────────────────────────────────────────
 
-    /**
-     * Force a manual check-in for the given profileId.
-     * Mirrors manualCheckIn() in useAutomation.ts.
-     *
-     * Usage: AttendanceServicePlugin.manualCheckIn({ profileId: "abc123" });
-     */
     @PluginMethod
     public void manualCheckIn(PluginCall call) {
         String profileId = call.getString("profileId");
@@ -193,7 +155,7 @@ public class AttendancePlugin extends Plugin {
                     now.get(java.util.Calendar.MONTH) + 1,
                     now.get(java.util.Calendar.DAY_OF_MONTH));
 
-            // Fix B2: check absent-exclusive
+            // Check if already checked in (exclude absent records)
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
@@ -238,11 +200,6 @@ public class AttendancePlugin extends Plugin {
         }
     }
 
-    /**
-     * Force a manual check-out for the given profileId (or all open sessions if omitted).
-     * Usage: AttendanceServicePlugin.manualCheckOut({ profileId: "abc123" });
-     *        AttendanceServicePlugin.manualCheckOut({});  // closes all
-     */
     @PluginMethod
     public void manualCheckOut(PluginCall call) {
         String profileId = call.getString("profileId"); // nullable = close all
@@ -284,11 +241,12 @@ public class AttendancePlugin extends Plugin {
                     p.setTimeZone(java.util.TimeZone.getTimeZone("Asia/Kolkata"));
                     String trimmed = l.getString("checkIn").replaceAll("(\\+[0-9:]+|Z)$", "");
                     checkInMs = p.parse(trimmed).getTime();
-                } catch (Exception ex) { checkInMs = now.getTimeInMillis() - 3_600_000; }
+                } catch (Exception ex) {
+                    checkInMs = now.getTimeInMillis() - 3_600_000;
+                }
 
                 long duration = Math.round((now.getTimeInMillis() - checkInMs) / 60000.0);
 
-                // Look up expected hours for this profile
                 double expectedHrs = 8.0;
                 for (int j = 0; j < profiles.length(); j++) {
                     JSONObject p = profiles.getJSONObject(j);
@@ -314,10 +272,16 @@ public class AttendancePlugin extends Plugin {
             ret.put("success", changed);
             call.resolve(ret);
 
+        } catch (JSONException e) {
+            call.reject("manualCheckOut error: " + e.getMessage());
+        }
+    }
+
+    // ── Battery optimisation exemption ────────────────────────────────────────
+
     /**
-     * Check if the app already has battery optimization exemption.
+     * Check if this app is already exempt from battery optimisation.
      * Returns: { exempted: boolean }
-     * React calls this on launch to decide whether to prompt the user.
      */
     @PluginMethod
     public void isBatteryExempted(PluginCall call) {
@@ -333,13 +297,9 @@ public class AttendancePlugin extends Plugin {
     }
 
     /**
-     * Open the system dialog asking the user to exempt this app from battery optimisation.
-     * On Android 6+ this launches ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS directly for
-     * our package (allowed without Play Store restrictions because we are a location tracking
-     * app that discloses this in the manifest via foregroundServiceType=location).
-     *
-     * Call this only once, after the user has acknowledged a rationale dialog in React.
-     * Usage: AttendanceServicePlugin.requestBatteryExemption();
+     * Open the system dialog to exempt this app from battery optimisation.
+     * Only call after showing a rationale to the user.
+     * Returns: { alreadyExempted: boolean }
      */
     @PluginMethod
     public void requestBatteryExemption(PluginCall call) {
