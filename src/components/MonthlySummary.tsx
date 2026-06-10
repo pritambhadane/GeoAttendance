@@ -2,14 +2,13 @@ import { useState, useMemo } from 'react';
 import {
   BarChart3, TrendingUp, TrendingDown, Clock, CheckCircle2,
   XCircle, Calendar, ChevronLeft, ChevronRight, AlertTriangle,
-  Award, Target, Flame, Zap,
+  Award, Target, Flame, Zap, Users,
 } from 'lucide-react';
-import { AttendanceLog, LocationProfile } from '../types';
+import { AttendanceLog } from '../types';
 import { formatDuration, getDayName } from '../utils/storage';
 
 interface MonthlySummaryProps {
   logs: AttendanceLog[];
-  profiles: LocationProfile[];
 }
 
 interface DayData {
@@ -24,6 +23,7 @@ interface DayData {
 }
 
 interface ProfileBreakdown {
+  id: string;
   name: string;
   color: string;
   totalMinutes: number;
@@ -34,36 +34,57 @@ interface ProfileBreakdown {
 }
 
 function getMonthName(m: number): string {
-  return ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'][m];
+  return ['January','February','March','April','May','June',
+    'July','August','September','October','November','December'][m];
 }
 
-export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) {
+/** Safely parse a duration value — handles null, undefined, strings */
+function safeDuration(d: unknown): number {
+  if (d === null || d === undefined) return 0;
+  const n = Number(d);
+  return isFinite(n) && n > 0 ? n : 0;
+}
+
+export default function MonthlySummary({ logs }: MonthlySummaryProps) {
   const now = new Date();
-  const [viewMonth, setViewMonth] = useState(now.getMonth());
-  const [viewYear, setViewYear] = useState(now.getFullYear());
-  const [selectedProfileId, setSelectedProfileId] = useState<string>('all');
+  const [viewMonth, setViewMonth]   = useState(now.getMonth());
+  const [viewYear, setViewYear]     = useState(now.getFullYear());
+  const [selectedProfile, setSelectedProfile] = useState<string>('all');
 
   const prevMonth = () => {
-    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
-    else setViewMonth(viewMonth - 1);
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1); }
+    else setViewMonth(m => m - 1);
   };
   const nextMonth = () => {
-    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
-    else setViewMonth(viewMonth + 1);
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(y => y + 1); }
+    else setViewMonth(m => m + 1);
   };
   const goToday = () => { setViewMonth(now.getMonth()); setViewYear(now.getFullYear()); };
 
-  // Compute all analytics for the selected month
-  const analytics = useMemo(() => {
-    const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
-    const monthStr = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
-    const allMonthLogs = logs.filter(l => l.date.startsWith(monthStr));
-    const monthLogs = selectedProfileId === 'all'
-      ? allMonthLogs
-      : allMonthLogs.filter(l => l.profileId === selectedProfileId);
+  // ── Derive unique profiles from all logs (for tab bar) ───────────────────
+  const allProfiles = useMemo(() => {
+    const seen = new Map<string, { id: string; name: string; color: string }>();
+    for (const l of logs) {
+      if (!seen.has(l.profileId)) {
+        seen.set(l.profileId, { id: l.profileId, name: l.profileName, color: l.profileColor });
+      }
+    }
+    return Array.from(seen.values());
+  }, [logs]);
 
-    // Build per-day data
+  // ── Filter logs by selected profile ─────────────────────────────────────
+  const filteredLogs = useMemo(() =>
+    selectedProfile === 'all' ? logs : logs.filter(l => l.profileId === selectedProfile),
+    [logs, selectedProfile]
+  );
+
+  // ── Analytics ────────────────────────────────────────────────────────────
+  const analytics = useMemo(() => {
+    const daysInMonth  = new Date(viewYear, viewMonth + 1, 0).getDate();
+    const monthStr     = `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}`;
+    const monthLogs    = filteredLogs.filter(l => l.date && l.date.startsWith(monthStr));
+
+    // Per-day map
     const dayMap = new Map<string, DayData>();
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${monthStr}-${String(d).padStart(2, '0')}`;
@@ -83,19 +104,20 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
     for (const log of monthLogs) {
       const day = dayMap.get(log.date);
       if (!day) continue;
-      // Fix #6: exclude absent records from duration totals
-      if (log.status !== 'absent') day.totalMinutes += log.duration || 0;
+      const dur = safeDuration(log.duration);
+      if (log.status !== 'absent') day.totalMinutes += dur;
       day.sessions += 1;
       if (log.attended) { day.attended = true; day.profiles.push(log.profileName); }
       else { day.absent = true; }
     }
 
-    const days = Array.from(dayMap.values());
-    const workingDays = days.filter(d => d.sessions > 0 || d.attended || d.absent);
-    const attendedDays = days.filter(d => d.attended && !d.absent);
-    const absentDays = days.filter(d => d.absent && !d.attended);
-    // Fix #6: exclude absent records from total minutes
-    const totalMinutes = monthLogs.filter(l => l.status !== 'absent').reduce((s, l) => s + (l.duration || 0), 0);
+    const days           = Array.from(dayMap.values());
+    const workingDays    = days.filter(d => d.sessions > 0 || d.attended || d.absent);
+    const attendedDays   = days.filter(d => d.attended && !d.absent);
+    const absentDays     = days.filter(d => d.absent && !d.attended);
+    const totalMinutes   = monthLogs
+      .filter(l => l.status !== 'absent')
+      .reduce((s, l) => s + safeDuration(l.duration), 0);
     const avgDailyMinutes = workingDays.length > 0 ? totalMinutes / workingDays.length : 0;
 
     // Profile breakdown
@@ -103,28 +125,23 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
     for (const log of monthLogs) {
       if (!profileMap.has(log.profileId)) {
         profileMap.set(log.profileId, {
+          id: log.profileId,
           name: log.profileName,
           color: log.profileColor,
-          totalMinutes: 0,
-          sessions: 0,
-          attendedDays: 0,
-          absentDays: 0,
-          avgMinutes: 0,
+          totalMinutes: 0, sessions: 0, attendedDays: 0, absentDays: 0, avgMinutes: 0,
         });
       }
       const pb = profileMap.get(log.profileId)!;
-      // Fix #6: exclude absent records from duration totals
-      if (log.status !== 'absent') pb.totalMinutes += log.duration || 0;
+      if (log.status !== 'absent') pb.totalMinutes += safeDuration(log.duration);
       pb.sessions += 1;
-      if (log.attended) pb.attendedDays += 1;
-      else pb.absentDays += 1;
+      if (log.attended) pb.attendedDays += 1; else pb.absentDays += 1;
     }
     const profileBreakdown = Array.from(profileMap.values());
     for (const pb of profileBreakdown) {
       pb.avgMinutes = pb.attendedDays > 0 ? pb.totalMinutes / pb.attendedDays : 0;
     }
 
-    // Week-over-week trend (compare last 2 full weeks in the month)
+    // Weekly trend
     const weekBuckets: number[][] = [[], [], [], [], []];
     for (const d of days) {
       const weekIdx = Math.min(Math.floor((d.dayNum - 1) / 7), 4);
@@ -145,128 +162,106 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
       }
     }
 
-    // Streak: longest consecutive attended days
-    let longestStreak = 0;
-    let currentStreak = 0;
+    // Streaks
+    let longestStreak = 0, currentStreak = 0;
     for (const d of days) {
       if (d.attended) { currentStreak++; longestStreak = Math.max(longestStreak, currentStreak); }
       else { currentStreak = 0; }
     }
-
-    // Current streak from today going backward
     let activeStreak = 0;
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
     for (let i = days.length - 1; i >= 0; i--) {
       const d = days[i];
       if (d.date > todayStr) continue;
-      if (d.attended) activeStreak++;
-      else break;
+      if (d.attended) activeStreak++; else break;
     }
 
-    // Best day
-    const bestDay = days.reduce((best, d) => d.totalMinutes > best.totalMinutes ? d : best, days[0]);
+    // Best day, avg check-in, attendance rate
+    const bestDay = days.reduce((best, d) => d.totalMinutes > (best?.totalMinutes ?? 0) ? d : best, days[0]);
 
-    // Average check-in time
     const checkInTimes = monthLogs
-      .filter(l => l.attended)
+      .filter(l => l.attended && l.checkIn)
       .map(l => new Date(l.checkIn))
-      .map(d => d.getHours() * 60 + d.getMinutes());
-    const avgCheckInMin = checkInTimes.length > 0
-      ? Math.round(checkInTimes.reduce((s, t) => s + t, 0) / checkInTimes.length)
-      : -1;
-    const avgCheckInStr = avgCheckInMin >= 0
-      ? `${String(Math.floor(avgCheckInMin / 60)).padStart(2, '0')}:${String(avgCheckInMin % 60).padStart(2, '0')}`
-      : '--';
+      .map(d => d.getHours() * 60 + d.getMinutes())
+      .filter(t => t > 0);
+    const avgCheckInMin  = checkInTimes.length > 0
+      ? Math.round(checkInTimes.reduce((s,t) => s+t, 0) / checkInTimes.length) : -1;
+    const avgCheckInStr  = avgCheckInMin >= 0
+      ? `${String(Math.floor(avgCheckInMin/60)).padStart(2,'0')}:${String(avgCheckInMin%60).padStart(2,'0')}` : '--';
 
-    // Attendance rate
     const totalTrackedDays = attendedDays.length + absentDays.length;
-    const attendanceRate = totalTrackedDays > 0
-      ? Math.round((attendedDays.length / totalTrackedDays) * 100)
-      : 0;
+    const attendanceRate   = totalTrackedDays > 0
+      ? Math.round((attendedDays.length / totalTrackedDays) * 100) : 0;
 
     // Day-of-week breakdown
-    const dowMinutes = [0, 0, 0, 0, 0, 0, 0];
-    const dowCounts = [0, 0, 0, 0, 0, 0, 0];
+    const dowMinutes = [0,0,0,0,0,0,0];
+    const dowCounts  = [0,0,0,0,0,0,0];
     for (const log of monthLogs) {
-      if (log.status === 'absent') continue; // Fix #6: skip absent in dow breakdown
-      const day = new Date(log.date + 'T00:00:00').getDay();
-      dowMinutes[day] += log.duration || 0;
-      dowCounts[day] += 1;
+      if (log.status === 'absent' || !log.date) continue;
+      const dow = new Date(log.date + 'T00:00:00').getDay();
+      dowMinutes[dow] += safeDuration(log.duration);
+      dowCounts[dow]  += 1;
     }
 
     return {
       days, workingDays: workingDays.length,
       attendedDays: attendedDays.length, absentDays: absentDays.length,
-      totalMinutes, avgDailyMinutes,
-      profileBreakdown, weeklyTrend, weeklyTrendPct,
-      longestStreak, activeStreak, bestDay, avgCheckInStr,
-      attendanceRate, dowMinutes, dowCounts,
+      totalMinutes, avgDailyMinutes, profileBreakdown,
+      weeklyTrend, weeklyTrendPct, longestStreak, activeStreak,
+      bestDay, avgCheckInStr, attendanceRate, dowMinutes, dowCounts,
+      hasData: monthLogs.length > 0,
     };
-  }, [logs, viewMonth, viewYear, selectedProfileId]);
+  }, [filteredLogs, viewMonth, viewYear]);
 
   const {
     days, workingDays, attendedDays, absentDays,
     totalMinutes, avgDailyMinutes, profileBreakdown,
     weeklyTrend, weeklyTrendPct, longestStreak, activeStreak,
-    bestDay, avgCheckInStr, attendanceRate, dowMinutes, dowCounts,
+    bestDay, avgCheckInStr, attendanceRate, dowMinutes, dowCounts, hasData,
   } = analytics;
 
-  // Heatmap: max minutes for color scaling
   const maxDayMinutes = Math.max(...days.map(d => d.totalMinutes), 1);
-
-  // Bar chart: daily hours for the last 14 days of the month
-  const barDays = days.slice(-14);
-
+  const barDays       = days.slice(-14);
   const isCurrentMonth = viewMonth === now.getMonth() && viewYear === now.getFullYear();
 
-  // Insight messages
+  // Insights
   const insights = useMemo(() => {
     const items: { icon: typeof TrendingUp; text: string; color: string; bg: string }[] = [];
-
-    if (attendanceRate >= 95) {
+    if (attendanceRate >= 95)
       items.push({ icon: Award, text: `Outstanding ${attendanceRate}% attendance rate this month!`, color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800' });
-    } else if (attendanceRate >= 80) {
+    else if (attendanceRate >= 80)
       items.push({ icon: CheckCircle2, text: `${attendanceRate}% attendance rate — solid performance.`, color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800' });
-    } else if (attendanceRate > 0) {
+    else if (attendanceRate > 0)
       items.push({ icon: AlertTriangle, text: `${attendanceRate}% attendance rate — room for improvement.`, color: 'text-amber-700 dark:text-amber-300', bg: 'bg-amber-50 border-amber-200 dark:bg-amber-950 dark:border-amber-800' });
-    }
-
-    if (weeklyTrend === 'up') {
+    if (weeklyTrend === 'up')
       items.push({ icon: TrendingUp, text: `Hours trending up (+${weeklyTrendPct}%) vs previous week.`, color: 'text-teal-700 dark:text-teal-300', bg: 'bg-teal-50 border-teal-200 dark:bg-teal-950 dark:border-teal-800' });
-    } else if (weeklyTrend === 'down') {
+    else if (weeklyTrend === 'down')
       items.push({ icon: TrendingDown, text: `Hours trending down (${weeklyTrendPct}%) vs previous week.`, color: 'text-rose-700 dark:text-rose-300', bg: 'bg-rose-50 border-rose-200 dark:bg-rose-950 dark:border-rose-800' });
-    }
-
-    if (activeStreak >= 5) {
+    if (activeStreak >= 5)
       items.push({ icon: Flame, text: `You're on a ${activeStreak}-day active streak!`, color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 border-orange-200 dark:bg-orange-950 dark:border-orange-800' });
-    } else if (longestStreak >= 7) {
+    else if (longestStreak >= 7)
       items.push({ icon: Flame, text: `Longest streak this month: ${longestStreak} consecutive days.`, color: 'text-orange-700 dark:text-orange-300', bg: 'bg-orange-50 border-orange-200 dark:bg-orange-950 dark:border-orange-800' });
-    }
-
-    if (bestDay && bestDay.totalMinutes > 0) {
+    if (bestDay && bestDay.totalMinutes > 0)
       items.push({ icon: Zap, text: `Most productive day: ${bestDay.dayName} ${bestDay.dayNum} (${formatDuration(bestDay.totalMinutes)}).`, color: 'text-indigo-700 dark:text-indigo-300', bg: 'bg-indigo-50 border-indigo-200 dark:bg-indigo-950 dark:border-indigo-800' });
-    }
-
-    if (avgDailyMinutes > 0 && avgDailyMinutes < 360) {
+    if (avgDailyMinutes > 0 && avgDailyMinutes < 360)
       items.push({ icon: Target, text: `Average ${formatDuration(avgDailyMinutes)}/day — below typical 6h threshold.`, color: 'text-amber-700 dark:text-amber-300', bg: 'bg-amber-50 border-amber-200 dark:bg-amber-950 dark:border-amber-800' });
-    } else if (avgDailyMinutes >= 480) {
+    else if (avgDailyMinutes >= 480)
       items.push({ icon: Target, text: `Average ${formatDuration(avgDailyMinutes)}/day — exceeding 8h target!`, color: 'text-emerald-700 dark:text-emerald-300', bg: 'bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800' });
-    }
-
     return items;
   }, [attendanceRate, weeklyTrend, weeklyTrendPct, activeStreak, longestStreak, bestDay, avgDailyMinutes]);
 
   return (
     <div className="space-y-6">
-      {/* Header: month nav + profile selector in one row */}
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div>
-          <h2 className="text-xl font-bold text-heading">Monthly Summary</h2>
-          <p className="text-sm text-sub">Key trends and attendance insights</p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap justify-end">
-          {/* Month navigation */}
-          <div className="flex items-center gap-1">
+
+      {/* ── Header row: title + month nav + profile tabs ─────────────────── */}
+      <div className="space-y-3">
+        {/* Top row: title + month navigation */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-xl font-bold text-heading">Monthly Summary</h2>
+            <p className="text-sm text-sub">Key trends and attendance insights</p>
+          </div>
+          <div className="flex items-center gap-2">
             <button onClick={prevMonth} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 transition dark:bg-slate-800 dark:hover:bg-slate-700">
               <ChevronLeft className="h-4 w-4 text-slate-600 dark:text-slate-300" />
             </button>
@@ -277,56 +272,68 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
               <ChevronRight className="h-4 w-4 text-slate-600 dark:text-slate-300" />
             </button>
           </div>
-
-          {/* Profile selector chips — only shown when there are multiple profiles */}
-          {profiles.length > 1 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                onClick={() => setSelectedProfileId('all')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition border ${
-                  selectedProfileId === 'all'
-                    ? 'bg-slate-700 text-white border-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:border-slate-200'
-                    : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700'
-                }`}
-              >
-                All
-              </button>
-              {profiles.map(p => (
-                <button
-                  key={p.id}
-                  onClick={() => setSelectedProfileId(p.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition border ${
-                    selectedProfileId === p.id
-                      ? 'text-white border-transparent'
-                      : 'bg-slate-100 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:border-slate-700 dark:hover:bg-slate-700'
-                  }`}
-                  style={
-                    selectedProfileId === p.id
-                      ? { backgroundColor: p.color, borderColor: p.color }
-                      : { color: p.color }
-                  }
-                >
-                  <span
-                    className="h-2 w-2 rounded-full flex-shrink-0"
-                    style={{ backgroundColor: p.color }}
-                  />
-                  {p.name}
-                </button>
-              ))}
-            </div>
-          )}
         </div>
+
+        {/* Profile tabs row — shown only when there are profiles in logs */}
+        {allProfiles.length > 0 && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <Users className="h-4 w-4 text-slate-400 shrink-0" />
+            {/* All tab */}
+            <button
+              onClick={() => setSelectedProfile('all')}
+              className={`px-3 py-1 rounded-full text-xs font-semibold transition border ${
+                selectedProfile === 'all'
+                  ? 'bg-slate-700 text-white border-slate-700 dark:bg-slate-200 dark:text-slate-900 dark:border-slate-200'
+                  : 'bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700'
+              }`}
+            >
+              All
+            </button>
+            {/* One tab per profile */}
+            {allProfiles.map(p => (
+              <button
+                key={p.id}
+                onClick={() => setSelectedProfile(p.id)}
+                className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition border ${
+                  selectedProfile === p.id
+                    ? 'text-white border-transparent'
+                    : 'bg-slate-100 border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:border-slate-700 dark:hover:bg-slate-700'
+                }`}
+                style={selectedProfile === p.id
+                  ? { backgroundColor: p.color, borderColor: p.color }
+                  : { color: p.color }
+                }
+              >
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ backgroundColor: p.color }}
+                />
+                {p.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
-      {totalMinutes === 0 && absentDays === 0 ? (
+      {/* ── No data state ────────────────────────────────────────────────── */}
+      {!hasData ? (
         <div className="card p-8 text-center">
           <BarChart3 className="h-12 w-12 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
-          <h3 className="font-semibold text-heading mb-1">No Data for {getMonthName(viewMonth)}</h3>
-          <p className="text-sm text-sub">Check in to a location profile to start building your monthly report.</p>
+          <h3 className="font-semibold text-heading mb-1">
+            No Data for {getMonthName(viewMonth)} {viewYear}
+            {selectedProfile !== 'all' && allProfiles.find(p => p.id === selectedProfile)
+              ? ` — ${allProfiles.find(p => p.id === selectedProfile)!.name}`
+              : ''}
+          </h3>
+          <p className="text-sm text-sub">
+            {selectedProfile !== 'all'
+              ? 'No attendance records for this profile in the selected month.'
+              : 'Check in to a location profile to start building your monthly report.'}
+          </p>
         </div>
       ) : (
         <>
-          {/* Key Metrics Hero */}
+          {/* Key Metrics */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="card p-4">
               <div className="flex items-center gap-2 text-emerald-600 dark:text-emerald-400 mb-2">
@@ -334,65 +341,31 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
                 <span className="text-xs font-medium uppercase tracking-wide">Total Hours</span>
               </div>
               <p className="text-2xl font-bold text-heading">{formatDuration(totalMinutes)}</p>
+              <p className="text-xs text-sub mt-1">Avg {formatDuration(avgDailyMinutes)}/day</p>
             </div>
             <div className="card p-4">
               <div className="flex items-center gap-2 text-teal-600 dark:text-teal-400 mb-2">
                 <CheckCircle2 className="h-4 w-4" />
-                <span className="text-xs font-medium uppercase tracking-wide">Attended</span>
+                <span className="text-xs font-medium uppercase tracking-wide">Attendance</span>
               </div>
-              <p className="text-2xl font-bold text-heading">{attendedDays}<span className="text-sm text-sub font-normal">/{workingDays} days</span></p>
-            </div>
-            <div className="card p-4">
-              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400 mb-2">
-                <XCircle className="h-4 w-4" />
-                <span className="text-xs font-medium uppercase tracking-wide">Absent</span>
-              </div>
-              <p className="text-2xl font-bold text-heading">{absentDays}<span className="text-sm text-sub font-normal"> days</span></p>
+              <p className="text-2xl font-bold text-heading">{attendanceRate}%</p>
+              <p className="text-xs text-sub mt-1">{attendedDays} present, {absentDays} absent</p>
             </div>
             <div className="card p-4">
               <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 mb-2">
-                <Target className="h-4 w-4" />
-                <span className="text-xs font-medium uppercase tracking-wide">Avg/Day</span>
+                <Flame className="h-4 w-4" />
+                <span className="text-xs font-medium uppercase tracking-wide">Streak</span>
               </div>
-              <p className="text-2xl font-bold text-heading">{formatDuration(avgDailyMinutes)}</p>
+              <p className="text-2xl font-bold text-heading">{activeStreak}d</p>
+              <p className="text-xs text-sub mt-1">Longest: {longestStreak} days</p>
             </div>
-          </div>
-
-          {/* Attendance Rate + Streak */}
-          <div className="grid grid-cols-2 gap-4">
-            <div className="card p-5">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-semibold text-heading">Attendance Rate</span>
-                <span className={`text-lg font-bold ${attendanceRate >= 80 ? 'text-emerald-600 dark:text-emerald-400' : attendanceRate >= 50 ? 'text-amber-600 dark:text-amber-400' : 'text-rose-600 dark:text-rose-400'}`}>
-                  {attendanceRate}%
-                </span>
+            <div className="card p-4">
+              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 mb-2">
+                <Clock className="h-4 w-4" />
+                <span className="text-xs font-medium uppercase tracking-wide">Avg Check-in</span>
               </div>
-              <div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-700 ${attendanceRate >= 80 ? 'bg-emerald-500' : attendanceRate >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
-                  style={{ width: `${Math.min(attendanceRate, 100)}%` }}
-                />
-              </div>
-              <div className="mt-2 flex items-center gap-1 text-xs text-sub">
-                <Flame className="h-3 w-3 text-orange-500" />
-                <span>Current streak: <strong className="text-heading">{activeStreak}</strong> days</span>
-              </div>
-            </div>
-            <div className="card p-5">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-sm font-semibold text-heading">Avg Check-In</span>
-                <span className="text-lg font-bold text-heading">{avgCheckInStr}</span>
-              </div>
-              <div className="mt-1 flex items-center gap-1 text-xs text-sub">
-                <Calendar className="h-3 w-3 text-indigo-500" />
-                <span>Best streak: <strong className="text-heading">{longestStreak}</strong> days</span>
-              </div>
-              {bestDay.totalMinutes > 0 && (
-                <div className="mt-2 flex items-center gap-1 text-xs text-sub">
-                  <Zap className="h-3 w-3 text-amber-500" />
-                  <span>Top day: <strong className="text-heading">{bestDay.dayName} {bestDay.dayNum}</strong> ({formatDuration(bestDay.totalMinutes)})</span>
-                </div>
-              )}
+              <p className="text-2xl font-bold text-heading">{avgCheckInStr}</p>
+              <p className="text-xs text-sub mt-1">{workingDays} working days</p>
             </div>
           </div>
 
@@ -400,7 +373,7 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
           {insights.length > 0 && (
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-3">
-                <TrendingUp className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+                <Zap className="h-5 w-5 text-yellow-500" />
                 <h3 className="font-semibold text-heading">Key Insights</h3>
               </div>
               <div className="space-y-2">
@@ -422,15 +395,16 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
             <div className="flex items-center gap-2 mb-4">
               <BarChart3 className="h-5 w-5 text-teal-600 dark:text-teal-400" />
               <h3 className="font-semibold text-heading">Daily Hours</h3>
+              <span className="text-xs text-sub ml-auto">Last 14 days</span>
             </div>
             <div className="flex items-end gap-1 h-32">
               {barDays.map(d => {
                 const pct = maxDayMinutes > 0 ? (d.totalMinutes / maxDayMinutes) * 100 : 0;
-                const isToday = d.date === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                const isToday = d.date === `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
                 return (
                   <div key={d.date} className="flex-1 flex flex-col items-center gap-1 min-w-0">
                     <span className="text-[10px] text-sub truncate w-full text-center">
-                      {d.totalMinutes > 0 ? `${Math.round(d.totalMinutes / 60 * 10) / 10}h` : ''}
+                      {d.totalMinutes > 0 ? `${Math.round(d.totalMinutes/60*10)/10}h` : ''}
                     </span>
                     <div className="w-full relative" style={{ height: '80px' }}>
                       <div
@@ -449,61 +423,48 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
             </div>
           </div>
 
-          {/* Attendance Heatmap Calendar */}
+          {/* Attendance Heatmap */}
           <div className="card p-5">
             <div className="flex items-center gap-2 mb-4">
               <Calendar className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
               <h3 className="font-semibold text-heading">Attendance Heatmap</h3>
             </div>
-            {/* Day-of-week headers */}
             <div className="grid grid-cols-7 gap-1.5 mb-1.5">
-              {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d, i) => (
+              {['S','M','T','W','T','F','S'].map((d,i) => (
                 <div key={i} className="text-center text-[10px] font-medium text-sub">{d}</div>
               ))}
             </div>
-            {/* Calendar grid */}
             <div className="grid grid-cols-7 gap-1.5">
-              {/* Leading empty cells */}
-              {Array.from({ length: new Date(viewYear, viewMonth, 1).getDay() }, (_, i) => (
+              {Array.from({ length: new Date(viewYear, viewMonth, 1).getDay() }, (_,i) => (
                 <div key={`empty-${i}`} />
               ))}
               {days.map(d => {
                 const intensity = d.totalMinutes / maxDayMinutes;
-                const isToday = d.date === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                const isToday = d.date === `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
                 let bg = 'bg-slate-100 dark:bg-slate-800';
-                if (d.absent && !d.attended) bg = 'bg-rose-400 dark:bg-rose-600';
-                else if (intensity >= 0.8) bg = 'bg-emerald-500';
-                else if (intensity >= 0.5) bg = 'bg-emerald-400';
-                else if (intensity >= 0.2) bg = 'bg-emerald-300 dark:bg-emerald-700';
-                else if (d.attended) bg = 'bg-emerald-200 dark:bg-emerald-800';
-
+                if (d.absent && !d.attended)   bg = 'bg-rose-400 dark:bg-rose-600';
+                else if (intensity >= 0.8)      bg = 'bg-emerald-500';
+                else if (intensity >= 0.5)      bg = 'bg-emerald-400';
+                else if (intensity >= 0.2)      bg = 'bg-emerald-300 dark:bg-emerald-700';
+                else if (d.attended)            bg = 'bg-emerald-200 dark:bg-emerald-800';
                 return (
                   <div
                     key={d.date}
                     className={`aspect-square rounded-lg ${bg} flex items-center justify-center text-xs font-medium relative ${
                       isToday ? 'ring-2 ring-teal-500 ring-offset-1 dark:ring-offset-slate-900' : ''
                     } ${d.attended || d.absent ? 'text-white' : 'text-slate-500 dark:text-slate-400'}`}
-                    title={`${d.date}: ${d.attended ? 'Present' : d.absent ? 'Absent' : 'No data'}${d.totalMinutes > 0 ? ` - ${formatDuration(d.totalMinutes)}` : ''}`}
+                    title={`${d.date}: ${d.attended ? 'Present' : d.absent ? 'Absent' : 'No data'}${d.totalMinutes > 0 ? ` — ${formatDuration(d.totalMinutes)}` : ''}`}
                   >
                     {d.dayNum}
                   </div>
                 );
               })}
             </div>
-            {/* Legend */}
             <div className="flex items-center gap-3 mt-3 text-xs text-sub">
-              <div className="flex items-center gap-1">
-                <div className="h-3 w-3 rounded bg-rose-400" /> Absent
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="h-3 w-3 rounded bg-emerald-200 dark:bg-emerald-800" /> Low
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="h-3 w-3 rounded bg-emerald-400" /> Mid
-              </div>
-              <div className="flex items-center gap-1">
-                <div className="h-3 w-3 rounded bg-emerald-500" /> High
-              </div>
+              <div className="flex items-center gap-1"><div className="h-3 w-3 rounded bg-rose-400" /> Absent</div>
+              <div className="flex items-center gap-1"><div className="h-3 w-3 rounded bg-emerald-200 dark:bg-emerald-800" /> Low</div>
+              <div className="flex items-center gap-1"><div className="h-3 w-3 rounded bg-emerald-400" /> Mid</div>
+              <div className="flex items-center gap-1"><div className="h-3 w-3 rounded bg-emerald-500" /> High</div>
             </div>
           </div>
 
@@ -514,8 +475,8 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
               <h3 className="font-semibold text-heading">Day-of-Week Breakdown</h3>
             </div>
             <div className="space-y-2">
-              {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((name, i) => {
-                const mins = dowMinutes[i];
+              {['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map((name, i) => {
+                const mins  = dowMinutes[i];
                 const count = dowCounts[i];
                 const maxDow = Math.max(...dowMinutes, 1);
                 const pct = (mins / maxDow) * 100;
@@ -541,8 +502,8 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
             </div>
           </div>
 
-          {/* Profile Breakdown */}
-          {profileBreakdown.length > 1 && (
+          {/* Profile Breakdown — shown in All view when >1 profile */}
+          {selectedProfile === 'all' && profileBreakdown.length > 1 && (
             <div className="card p-5">
               <div className="flex items-center gap-2 mb-4">
                 <BarChart3 className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
@@ -553,7 +514,7 @@ export default function MonthlySummary({ logs, profiles }: MonthlySummaryProps) 
                   const maxProfileMinutes = Math.max(...profileBreakdown.map(p => p.totalMinutes), 1);
                   const pct = (pb.totalMinutes / maxProfileMinutes) * 100;
                   return (
-                    <div key={pb.name} className="space-y-1.5">
+                    <div key={pb.id} className="space-y-1.5">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                           <div className="h-3 w-3 rounded-full" style={{ backgroundColor: pb.color }} />
