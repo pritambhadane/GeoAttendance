@@ -28,6 +28,11 @@ public class BootReceiver extends BroadcastReceiver {
             Log.i(TAG, "Boot completed — restarting AttendanceForegroundService");
             Intent serviceIntent = new Intent(context, AttendanceForegroundService.class);
             serviceIntent.setAction("START");
+            // Flag so the service knows this is a cold boot start, not a user/JS start.
+            // The service uses this to:
+            //   1. Delay the catch-up GPS scan longer (GPS needs ~60s cold-fix after reboot)
+            //   2. Warn via notification if profiles are missing from SharedPreferences
+            serviceIntent.putExtra(AttendanceForegroundService.EXTRA_IS_BOOT, true);
             ContextCompat.startForegroundService(context, serviceIntent);
         }
     }

@@ -58,6 +58,10 @@ public class AttendanceForegroundService extends Service {
     public static final int    NOTIF_ID      = 1001;  // persistent foreground notif
     private int eventNotifId = 2000;                  // incrementing event notifs
 
+    // ── Intent extras ────────────────────────────────────────────────────────
+    /** Set to true by BootReceiver so we know it's a cold-boot start */
+    public static final String EXTRA_IS_BOOT = "is_boot_start";
+
     // ── SharedPreferences keys ───────────────────────────────────────────────
     /** Bridge to React UI — current tracking snapshot */
     public static final String PREFS_STATE = "AttendanceState";
@@ -94,11 +98,13 @@ public class AttendanceForegroundService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.i(TAG, "onStartCommand action=" + (intent != null ? intent.getAction() : "null"));
+        boolean isBootStart = intent != null && intent.getBooleanExtra(EXTRA_IS_BOOT, false);
+        Log.i(TAG, "onStartCommand action=" + (intent != null ? intent.getAction() : "null")
+                + " isBootStart=" + isBootStart);
 
         startForeground(NOTIF_ID, buildPersistentNotification("GeoAttend active — tracking location"));
 
-        // Close any previous-day open sessions on service start (fix B8)
+        // Close any previous-day open sessions on service start
         closeStaleSessions();
 
         // Start GPS
@@ -107,10 +113,34 @@ public class AttendanceForegroundService extends Service {
         // Start periodic logic ticks
         startTicks();
 
-        // Run an immediate catch-up scan (mirrors isCatchUp=true in TypeScript)
-        handler.postDelayed(this::runCatchUpScan, 2000);
+        if (isBootStart) {
+            // After a cold reboot, GPS hardware needs time to acquire satellites
+            // (typically 30–90 seconds). We check whether profiles are present in
+            // SharedPreferences — they survive reboot since SharedPreferences is
+            // written to the device's internal storage. If they're missing (e.g.
+            // first install, data cleared), we send a notification asking the user
+            // to open the app so syncProfiles() can run.
+            JSONArray profiles = getProfiles();
+            if (profiles.length() == 0) {
+                Log.w(TAG, "Boot start: no profiles found in SharedPreferences — user must open app");
+                sendEventNotification(
+                        "⚠️ GeoAttend — action required",
+                        "Open the app to restore attendance tracking after reboot"
+                );
+                // Still schedule ticks — they'll do nothing until profiles arrive via syncProfiles()
+            } else {
+                Log.i(TAG, "Boot start: " + profiles.length() + " profile(s) found, scheduling delayed catch-up scan");
+            }
+            // Delay catch-up scan by 90s on boot — gives GPS time for a cold fix.
+            // Normal app-launch starts use 2s (GPS already warm from system usage).
+            handler.postDelayed(this::runCatchUpScan, 90_000);
+        } else {
+            // Normal start (user opened app or START_STICKY restart): GPS is already
+            // warm, so a 2s delay is enough for the first fix to arrive.
+            handler.postDelayed(this::runCatchUpScan, 2_000);
+        }
 
-        return START_STICKY; // restart if killed by system (fix B4/B9/B10)
+        return START_STICKY; // restart if killed by system
     }
 
     @Override
