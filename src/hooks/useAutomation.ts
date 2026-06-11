@@ -469,7 +469,10 @@ export function useAutomation() {
       checkIn: now.toISOString(), checkOut: null, duration: null,
       status: 'manual', profileColor: profile.color, attended: true,
     };
-    const updated = [...logsRef.current, newLog];
+    // Remove any absent record for this profile+date before inserting manual check-in (Bug 9)
+    const withoutAbsent = logsRef.current.filter(
+      l => !(l.profileId === profileId && l.date === todayStr && l.status === 'absent'));
+    const updated = [...withoutAbsent, newLog];
     setLogs(updated); logsRef.current = updated; saveLogs(updated);
   }, [profiles, getCurrentTime]);
 
@@ -501,8 +504,13 @@ export function useAutomation() {
     startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
     return logsRef.current
-      .filter(l => new Date(l.checkIn) >= startOfWeek && l.duration !== null && l.status !== 'absent')
-      .reduce((sum, l) => sum + (l.duration || 0), 0);
+      .filter(l => new Date(l.checkIn) >= startOfWeek && l.status !== 'absent')
+      .reduce((sum, l) => {
+        if (l.duration !== null) return sum + l.duration;
+        // Open session — accumulate elapsed time live
+        if (l.checkOut === null) return sum + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
+        return sum;
+      }, 0);
   }, [getCurrentTime]);
 
   const getTodayStatus = useCallback(() => {
@@ -512,7 +520,12 @@ export function useAutomation() {
     const open = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
     const totalMinutes = todayLogs
       .filter(l => l.status !== 'absent')
-      .reduce((s, l) => s + (l.duration || 0), 0);
+      .reduce((s, l) => {
+        if (l.duration !== null) return s + l.duration;
+        // Open session — accumulate elapsed time live
+        if (l.checkOut === null) return s + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
+        return s;
+      }, 0);
     return { checkedIn: open.length > 0, totalMinutes, logCount: todayLogs.length, openSessions: open };
   }, [getCurrentTime]);
 

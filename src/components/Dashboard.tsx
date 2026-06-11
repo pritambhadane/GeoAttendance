@@ -3,7 +3,7 @@ import {
   TrendingUp, CalendarDays, Radio, Users, Crosshair,
 } from 'lucide-react';
 import { AttendanceLog, LocationProfile, TrackingStatus } from '../types';
-import { formatDuration } from '../utils/storage';
+import { formatDuration, calculateDistance } from '../utils/storage';
 
 interface DashboardProps {
   trackingStatus: TrackingStatus;
@@ -160,10 +160,7 @@ export default function Dashboard({
         {activeProfiles.length > 0 && currentCoords && (
           <div className="mt-3 space-y-2">
             {activeProfiles.map(p => {
-              const dist = Math.sqrt(
-                Math.pow((currentCoords.latitude - p.latitude) * 111000, 2) +
-                Math.pow((currentCoords.longitude - p.longitude) * 111000 * Math.cos(currentCoords.latitude * Math.PI / 180), 2)
-              );
+              const dist = calculateDistance(currentCoords.latitude, currentCoords.longitude, p.latitude, p.longitude);
               const within = dist <= p.radius;
               const isCheckedIn = checkedInProfileIds.has(p.id);
               return (
