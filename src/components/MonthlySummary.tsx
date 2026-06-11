@@ -134,7 +134,24 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
       const pb = profileMap.get(log.profileId)!;
       if (log.status !== 'absent') pb.totalMinutes += safeDuration(log.duration);
       pb.sessions += 1;
-      if (log.attended) pb.attendedDays += 1; else pb.absentDays += 1;
+    }
+    // Count attended/absent days at the day level (not log level) to avoid
+    // double-counting a day that has both an absent record and a real session.
+    // A day is "attended" if any real (non-absent) session exists.
+    // A day is "absent-only" only if NO real session exists at all.
+    for (const pb of profileMap.values()) {
+      const profileDays = new Map<string, { hasReal: boolean; hasAbsent: boolean }>();
+      for (const log of monthLogs) {
+        if (log.profileId !== pb.id) continue;
+        if (!profileDays.has(log.date)) profileDays.set(log.date, { hasReal: false, hasAbsent: false });
+        const d = profileDays.get(log.date)!;
+        if (log.status === 'absent') d.hasAbsent = true;
+        else d.hasReal = true;
+      }
+      for (const d of profileDays.values()) {
+        if (d.hasReal) pb.attendedDays += 1;
+        else if (d.hasAbsent) pb.absentDays += 1;
+      }
     }
     const profileBreakdown = Array.from(profileMap.values());
     for (const pb of profileBreakdown) {

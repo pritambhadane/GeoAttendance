@@ -317,7 +317,7 @@ export function useAutomation() {
           const pendingKey = `exitpending:${openLog.id}`;
           const exitKey    = `exit:${openLog.id}`;
           const sessionMins = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
-          if (sessionMins >= 5 && !dedupRef.current.has(exitKey)) {
+          if (sessionMins >= 15 && !dedupRef.current.has(exitKey)) {
             if (dedupRef.current.has(pendingKey)) {
               // Second consecutive out-of-fence tick — fire checkout
               const duration = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
