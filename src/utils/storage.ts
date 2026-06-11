@@ -12,7 +12,7 @@ export function getProfiles(): LocationProfile[] {
   return parsed.map(p => ({
     ...p,
     expectedHoursPerDay: p.expectedHoursPerDay ?? 8,
-    checkFrequency: p.checkFrequency ?? 5,
+    checkEvery: p.checkEvery ?? 5,
     markAbsentAfter: p.markAbsentAfter ?? 30,
     workingDays: p.workingDays ?? [1, 2, 3, 4, 5],
   }));

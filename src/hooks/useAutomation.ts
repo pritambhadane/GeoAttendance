@@ -18,35 +18,37 @@ import {
 } from '../services/capacitor';
 import { AttendanceServicePlugin, isNativeServiceAvailable } from '../services/nativePlugin';
 
-interface ProcessedCheckIn {
-  profileId: string;
-  date: string;
-  timeKey: string;
+// ── Dedup key store ──────────────────────────────────────────────────────────
+// Keys are per-profile per-date strings stored in localStorage.
+// Format:  "checkin:{profileId}:{date}"          — first check-in of the day
+//          "reentry:{profileId}:{date}:{n}"       — nth re-entry (n = session count)
+//          "exit:{logId}"                         — geofence-exit checkout
+//          "out:{profileId}:{date}"               — scheduled-time checkout
+//          "absent:{profileId}:{date}"            — absent mark
+// Cleared at midnight via date-filter on load.
+
+const PROCESSED_KEY = 'geo_attendance_processed_v2';
+
+interface DedupEntry { key: string; date: string; }
+
+function loadDedup(currentDate: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(PROCESSED_KEY);
+    if (!raw) return new Set();
+    const entries: DedupEntry[] = JSON.parse(raw);
+    return new Set(entries.filter(e => e.date === currentDate).map(e => e.key));
+  } catch { return new Set(); }
 }
 
-const PROCESSED_KEY = 'geo_attendance_processed';
-const ABSENT_PROCESSED_KEY = 'geo_attendance_absent_processed';
-
-function loadProcessedFromStorage(key: string, currentDateStr: string): ProcessedCheckIn[] {
+function saveDedup(keys: Set<string>, currentDate: string): void {
   try {
-    const data = localStorage.getItem(key);
-    if (!data) return [];
-    const parsed: ProcessedCheckIn[] = JSON.parse(data);
-    return parsed.filter(p => p.date === currentDateStr);
-  } catch {
-    return [];
-  }
-}
-
-function saveProcessedToStorage(key: string, entries: ProcessedCheckIn[]): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(entries));
+    const entries: DedupEntry[] = Array.from(keys).map(k => ({ key: k, date: currentDate }));
+    localStorage.setItem(PROCESSED_KEY, JSON.stringify(entries));
   } catch { /* noop */ }
 }
 
-// ── FIX 2: helper — push profiles to Java SharedPreferences ─────────────────
-// Called after every profile add/update/delete/toggle so the background
-// ForegroundService always has the latest office locations and schedules.
+// ── Native sync helpers ──────────────────────────────────────────────────────
+
 async function syncProfilesToNative(profiles: LocationProfile[]) {
   if (!isNativeServiceAvailable()) return;
   try {
@@ -56,33 +58,21 @@ async function syncProfilesToNative(profiles: LocationProfile[]) {
   }
 }
 
-// ── FIX 5: merge logs written by Java back into React state ─────────────────
-// Java writes check-ins to SharedPreferences; React reads from localStorage.
-// These are separate stores. We poll getLogs() from the native service and
-// merge any new entries the service added while the screen was locked.
 async function mergeNativeLogs(currentLogs: AttendanceLog[]): Promise<AttendanceLog[] | null> {
   if (!isNativeServiceAvailable()) return null;
   try {
     const result = await AttendanceServicePlugin.getLogs();
     const nativeLogs: AttendanceLog[] = JSON.parse(result.logs);
     if (!nativeLogs.length) return null;
-
-    // Build a set of existing IDs for fast lookup
     const existingIds = new Set(currentLogs.map(l => l.id));
     const newEntries = nativeLogs.filter(l => !existingIds.has(l.id));
-
-    // Also update any logs the service modified (e.g. added checkOut)
     const nativeById = new Map(nativeLogs.map(l => [l.id, l]));
     let changed = newEntries.length > 0;
     const merged = currentLogs.map(l => {
       const native = nativeById.get(l.id);
-      if (native && native.checkOut !== l.checkOut) {
-        changed = true;
-        return native; // service filled in checkOut
-      }
+      if (native && native.checkOut !== l.checkOut) { changed = true; return native; }
       return l;
     });
-
     if (!changed) return null;
     return [...merged, ...newEntries];
   } catch (e) {
@@ -91,320 +81,151 @@ async function mergeNativeLogs(currentLogs: AttendanceLog[]): Promise<Attendance
   }
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function timeToMinutes(hhmm: string): number {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + (m || 0);
+}
+
+function safeDuration(ms: number): number {
+  return Math.max(0, Math.round(ms / 60000));
+}
+
+// ── Hook ─────────────────────────────────────────────────────────────────────
+
 export function useAutomation() {
-  const [profiles, setProfiles] = useState<LocationProfile[]>(getProfiles);
-  const [logs, setLogs] = useState<AttendanceLog[]>(getLogs);
+  const [profiles, setProfiles]     = useState<LocationProfile[]>(getProfiles);
+  const [logs, setLogs]             = useState<AttendanceLog[]>(getLogs);
   const [simulation, setSimulation] = useState<SimulationState>(getSimulation);
   const [currentPosition, setCurrentPosition] = useState<PositionData | null>(null);
-  const [positionError, setPositionError] = useState<string | null>(null);
+  const [positionError, setPositionError]     = useState<string | null>(null);
 
-  const processedRef = useRef<ProcessedCheckIn[]>([]);
-  const absentProcessedRef = useRef<ProcessedCheckIn[]>([]);
-  const logsRef = useRef<AttendanceLog[]>(logs);
+  const logsRef    = useRef<AttendanceLog[]>(logs);
+  const dedupRef   = useRef<Set<string>>(new Set());  // loaded lazily in tick
 
-  useEffect(() => {
-    logsRef.current = logs;
-  }, [logs]);
+  useEffect(() => { logsRef.current = logs; }, [logs]);
 
-  // ── Request permissions on mount ──────────────────────────────────────────
+  // ── Permissions ──────────────────────────────────────────────────────────
   useEffect(() => {
     requestLocationPermission().catch(console.warn);
     requestNotificationPermission().catch(console.warn);
   }, []);
 
-  // ── FIX 5: Poll native logs every 15s to sync background check-ins to UI ──
-  // When the screen is locked, the Java service records events into
-  // SharedPreferences. React's localStorage never gets updated. We poll
-  // the native bridge and merge any new/updated logs into React state.
+  // ── Native log poll (15s) ────────────────────────────────────────────────
   useEffect(() => {
     if (!isNativeServiceAvailable()) return;
-
     const poll = async () => {
       const merged = await mergeNativeLogs(logsRef.current);
-      if (merged) {
-        setLogs(merged);
-        logsRef.current = merged;
-        saveLogs(merged); // keep localStorage in sync for next cold start
-      }
+      if (merged) { setLogs(merged); logsRef.current = merged; saveLogs(merged); }
     };
+    const t = setTimeout(poll, 3000);
+    const iv = setInterval(poll, 15000);
+    return () => { clearTimeout(t); clearInterval(iv); };
+  }, []);
 
-    // Initial poll shortly after mount (service may already have data)
-    const initialTimer = setTimeout(poll, 3000);
-    // Then poll every 15s
-    const interval = setInterval(poll, 15000);
-
-    return () => {
-      clearTimeout(initialTimer);
-      clearInterval(interval);
-    };
-  }, []); // run once — logsRef.current always has latest value
-
+  // ── GPS watch (web/simulation fallback) ─────────────────────────────────
   const getCurrentTime = useCallback(() => {
     const now = new Date();
-    if (simulation.enabled && simulation.timeOffset !== 0) {
-      return new Date(now.getTime() + simulation.timeOffset * 60000);
-    }
-    return now;
+    return simulation.enabled && simulation.timeOffset !== 0
+      ? new Date(now.getTime() + simulation.timeOffset * 60000) : now;
   }, [simulation.enabled, simulation.timeOffset]);
 
   const getCurrentCoords = useCallback(() => {
-    if (simulation.enabled) {
+    if (simulation.enabled)
       return { latitude: simulation.latitude, longitude: simulation.longitude, accuracy: 0, timestamp: Date.now() };
-    }
     return currentPosition;
   }, [simulation, currentPosition]);
 
-  // ── Native location watch ─────────────────────────────────────────────────
   useEffect(() => {
     if (simulation.enabled) return;
-
     let active = true;
-
     const start = async () => {
       try {
         const pos = await getNativePosition();
         if (active) { setCurrentPosition(pos); setPositionError(null); }
-      } catch (e) {
-        if (active) setPositionError('Unable to get location');
-      }
-
+      } catch { if (active) setPositionError('Unable to get location'); }
       await startLocationWatch(
-        (pos) => { if (active) { setCurrentPosition(pos); setPositionError(null); } },
-        () => { if (active) setPositionError('Location watch failed'); }
+        pos => { if (active) { setCurrentPosition(pos); setPositionError(null); } },
+        ()  => { if (active) setPositionError('Location watch failed'); }
       );
     };
-
     start();
-    return () => {
-      active = false;
-      stopLocationWatch();
-    };
+    return () => { active = false; stopLocationWatch(); };
   }, [simulation.enabled]);
 
-  const getOpenSessions = useCallback(() => {
-    return logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
-  }, []);
+  // ── Session helpers ──────────────────────────────────────────────────────
+  const getOpenSessions = useCallback(() =>
+    logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent'), []);
 
   const getTrackingStatus = useCallback((): TrackingStatus => {
-    const open = logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
+    const now      = getCurrentTime();
+    const todayStr = dateToStr(now);
+    const nowMins  = timeToMinutes(timeToStr(now));
+    const nowDay   = now.getDay();
+
+    const todayLogs = logsRef.current.filter(l => l.date === todayStr);
+    const open      = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
     if (open.length > 0) return 'checked-in';
-    if (logsRef.current.length > 0) {
-      const nonAbsent = logsRef.current.filter(l => l.status !== 'absent');
-      if (nonAbsent.length > 0) {
-        const latest = nonAbsent[nonAbsent.length - 1];
-        if (latest.checkOut) return 'checked-out';
-      }
-    }
+
+    const nonAbsent = todayLogs.filter(l => l.status !== 'absent');
+    if (nonAbsent.length > 0 && nonAbsent[nonAbsent.length - 1].checkOut) return 'checked-out';
+
+    // 'tracking' = GPS watch active, inside check-in window for at least one profile,
+    // but no check-in yet (waiting for geofence entry)
+    const inWindow = profiles.some(p => {
+      if (!p.active) return false;
+      if (p.workingDays.length > 0 && !p.workingDays.includes(nowDay)) return false;
+      const ciMins = timeToMinutes(p.checkInTime);
+      return nowMins >= ciMins - 15 && nowMins <= ciMins + p.markAbsentAfter;
+    });
+    if (inWindow && (currentPosition !== null || simulation.enabled)) return 'tracking';
+
     return 'idle';
-  }, []);
+  }, [getCurrentTime, profiles, currentPosition, simulation.enabled]);
 
-  // ── Core automation tick ──────────────────────────────────────────────────
-  // When running as a native Android APK, AttendanceForegroundService.java owns
-  // ALL tick logic (GPS poll, geofence check, check-in/out/absent writes).
-  // Running the JS tick simultaneously causes duplicate records and race conditions.
-  // We skip the entire JS tick and rely solely on the native service + the
-  // mergeNativeLogs() poll above to keep the UI in sync.
+  // ── Core automation tick (web/browser only — disabled when native service runs) ──
   useEffect(() => {
-    if (isNativeServiceAvailable()) {
-      // Java service is running — JS tick is intentionally disabled.
-      // The mergeNativeLogs() interval (above) keeps React state up-to-date.
-      return;
-    }
+    if (isNativeServiceAvailable()) return; // Java service owns all tick logic on Android
 
-    // ── Web / browser fallback tick (no native service available) ────────────
-    const tick = (isCatchUp = false) => {
+    // ── Close stale open sessions from previous days ───────────────────────
+    const closeStale = () => {
       const now = getCurrentTime();
-      const currentTimeStr = timeToStr(now);
-      const coords = getCurrentCoords();
-      if (!coords) return;
-
-      const activeProfiles = profiles.filter(p => p.active);
-      const currentDateStr = dateToStr(now);
-      const currentDay = now.getDay();
-
-      let logsChanged = false;
-      let updatedLogs = [...logsRef.current];
-
-      if (processedRef.current.length === 0) {
-        processedRef.current = loadProcessedFromStorage(PROCESSED_KEY, currentDateStr);
-      }
-      if (absentProcessedRef.current.length === 0) {
-        absentProcessedRef.current = loadProcessedFromStorage(ABSENT_PROCESSED_KEY, currentDateStr);
-      }
-
-      processedRef.current = processedRef.current.filter(p => {
-        if (p.date !== currentDateStr) return false;
-        if (p.timeKey.startsWith('exit:')) return true;
-        if (p.timeKey.startsWith('entry:')) {
-          const entryMins = timeToMinutes(p.timeKey.slice(6));
-          return Math.abs(timeToMinutes(currentTimeStr) - entryMins) < 2;
-        }
-        return false;
-      });
-      absentProcessedRef.current = absentProcessedRef.current.filter(
-        p => p.date === currentDateStr
-      );
-
-      for (const profile of activeProfiles) {
-        if (profile.workingDays.length > 0 && !profile.workingDays.includes(currentDay)) continue;
-
-        const dist = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
-        const isWithinRadius = dist <= profile.radius;
-
-        const hasOpenSession = updatedLogs.some(
-          l => l.profileId === profile.id && l.checkOut === null
-            && l.date === currentDateStr && l.status !== 'absent'
-        );
-
-        // ── AUTO CHECK-IN ──────────────────────────────────────────────────
-        if (!hasOpenSession && isWithinRadius) {
-          const checkInMins = timeToMinutes(profile.checkInTime);
-          const currentMins = timeToMinutes(currentTimeStr);
-          const withinCheckInWindow =
-            currentMins >= checkInMins &&
-            currentMins <= checkInMins + profile.markAbsentAfter;
-
-          const absentMarked = updatedLogs.some(
-            l => l.profileId === profile.id && l.date === currentDateStr && l.status === 'absent'
-          );
-
-          const entryKey = `entry:${currentTimeStr.slice(0, 5)}`;
-          const alreadyProcessedEntry = processedRef.current.some(
-            p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === entryKey
-          );
-
-          if (withinCheckInWindow && !absentMarked && !alreadyProcessedEntry) {
-            const newLog: AttendanceLog = {
-              id: generateId(),
-              profileId: profile.id,
-              profileName: profile.name,
-              date: currentDateStr,
-              checkIn: now.toISOString(),
-              checkOut: null,
-              duration: null,
-              status: 'auto',
-              profileColor: profile.color,
-              attended: true,
-            };
-            updatedLogs = [...updatedLogs, newLog];
-            logsChanged = true;
-            processedRef.current.push({ profileId: profile.id, date: currentDateStr, timeKey: entryKey });
-            saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
-            notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-          }
-        }
-
-        // ── AUTO CHECK-OUT: geofence exit ──────────────────────────────────
-        if (hasOpenSession && !isWithinRadius) {
-          const openLog = updatedLogs.find(
-            l => l.profileId === profile.id && l.checkOut === null && l.date === currentDateStr
-          );
-          if (openLog) {
-            const timeSinceCheckIn = (now.getTime() - new Date(openLog.checkIn).getTime()) / 60000;
-            if (timeSinceCheckIn > 5) {
-              const exitKey = `exit:${openLog.id}`;
-              const alreadyProcessedExit = processedRef.current.some(
-                p => p.profileId === profile.id && p.date === currentDateStr && p.timeKey === exitKey
-              );
-              if (!alreadyProcessedExit) {
-                const duration = Math.round((now.getTime() - new Date(openLog.checkIn).getTime()) / 60000);
-                const expectedMinutes = profile.expectedHoursPerDay * 60;
-                const attended = duration >= expectedMinutes * 0.5;
-                updatedLogs = updatedLogs.map(l =>
-                  l.id === openLog.id
-                    ? { ...l, checkOut: now.toISOString(), duration, attended, status: 'auto' as const }
-                    : l
-                );
-                logsChanged = true;
-                processedRef.current.push({ profileId: profile.id, date: currentDateStr, timeKey: exitKey });
-                saveProcessedToStorage(PROCESSED_KEY, processedRef.current);
-                notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-              }
-            }
-          }
-        }
-
-        // ── MARK ABSENT ────────────────────────────────────────────────────
-        const checkInMinutes = timeToMinutes(profile.checkInTime);
-        const currentMinutes = timeToMinutes(currentTimeStr);
-        if (currentMinutes > checkInMinutes + profile.markAbsentAfter && !hasOpenSession && !isWithinRadius) {
-          const existingLog = updatedLogs.find(l => l.profileId === profile.id && l.date === currentDateStr);
-          const alreadyMarkedAbsent = absentProcessedRef.current.some(
-            p => p.profileId === profile.id && p.date === currentDateStr
-          );
-          if (!existingLog && !alreadyMarkedAbsent) {
-            const absentLog: AttendanceLog = {
-              id: generateId(),
-              profileId: profile.id,
-              profileName: profile.name,
-              date: currentDateStr,
-              checkIn: `${currentDateStr}T${profile.checkInTime}:00`,
-              checkOut: null,
-              duration: null,
-              status: 'absent',
-              profileColor: profile.color,
-              attended: false,
-            };
-            updatedLogs = [...updatedLogs, absentLog];
-            logsChanged = true;
-            absentProcessedRef.current.push({ profileId: profile.id, date: currentDateStr, timeKey: 'absent' });
-            saveProcessedToStorage(ABSENT_PROCESSED_KEY, absentProcessedRef.current);
-            notifyAbsent(profile.name);
-          }
-        }
-      }
-
-      if (logsChanged) {
-        setLogs(updatedLogs);
-        logsRef.current = updatedLogs;
-        saveLogs(updatedLogs);
-      }
-    };
-
-    tick(true);
-
-    const closeStaleOpenSessions = () => {
-      const now = getCurrentTime();
-      const currentDateStr = dateToStr(now);
+      const todayStr = dateToStr(now);
       let updated = [...logsRef.current];
       let changed = false;
-      const openLogs = updated.filter(l => l.checkOut === null && l.status !== 'absent');
-      for (const openLog of openLogs) {
-        const profile = profiles.find(p => p.id === openLog.profileId);
+      for (const log of updated.filter(l => l.checkOut === null && l.status !== 'absent' && l.date !== todayStr)) {
+        const profile = profiles.find(p => p.id === log.profileId);
         if (!profile) continue;
-        const isToday = openLog.date === currentDateStr;
-        if (!isToday) {
-          const logDate = openLog.date;
-          const checkOutMoment = new Date(`${logDate}T${profile.checkOutTime}:00`);
-          if (checkOutMoment < now) {
-            const duration = Math.max(0, Math.round((checkOutMoment.getTime() - new Date(openLog.checkIn).getTime()) / 60000));
-            const attended = duration >= profile.expectedHoursPerDay * 60 * 0.5;
-            updated = updated.map(l =>
-              l.id === openLog.id ? { ...l, checkOut: checkOutMoment.toISOString(), duration, attended } : l
-            );
-            changed = true;
-          }
+        const closeAt = new Date(`${log.date}T${profile.checkOutTime}:00`);
+        if (closeAt < now) {
+          const duration = safeDuration(closeAt.getTime() - new Date(log.checkIn).getTime());
+          const expectedMins = profile.expectedHoursPerDay * 60;
+          updated = updated.map(l => l.id === log.id
+            ? { ...l, checkOut: closeAt.toISOString(), duration, attended: duration >= expectedMins * 0.5 } : l);
+          changed = true;
         }
       }
       if (changed) { setLogs(updated); logsRef.current = updated; saveLogs(updated); }
     };
-    closeStaleOpenSessions();
+    closeStale();
 
-    const markPreviousDayAbsent = () => {
+    // ── Mark previous day(s) absent ────────────────────────────────────────
+    const markPrevAbsent = () => {
       const now = getCurrentTime();
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = dateToStr(yesterday);
+      const yStr = dateToStr(yesterday);
+      const yDay  = yesterday.getDay();
       let updated = [...logsRef.current];
       let changed = false;
       for (const profile of profiles.filter(p => p.active)) {
-        const checkInMins = timeToMinutes(profile.checkInTime);
-        if (checkInMins < 20 * 60) continue;
-        const alreadyHasLog = updated.some(l => l.profileId === profile.id && l.date === yesterdayStr);
-        if (alreadyHasLog) continue;
+        if (profile.workingDays.length > 0 && !profile.workingDays.includes(yDay)) continue;
+        if (updated.some(l => l.profileId === profile.id && l.date === yStr)) continue;
         updated = [...updated, {
           id: generateId(), profileId: profile.id, profileName: profile.name,
-          date: yesterdayStr, checkIn: `${yesterdayStr}T${profile.checkInTime}:00`,
+          date: yStr,
+          checkIn: `${yStr}T${profile.checkInTime}:00+05:30`,
           checkOut: null, duration: null, status: 'absent' as const,
           profileColor: profile.color, attended: false,
         }];
@@ -412,190 +233,291 @@ export function useAutomation() {
       }
       if (changed) { setLogs(updated); logsRef.current = updated; saveLogs(updated); }
     };
-    markPreviousDayAbsent();
+    markPrevAbsent();
 
-    let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
+    // ── Tick ───────────────────────────────────────────────────────────────
+    const tick = () => {
+      const now        = getCurrentTime();
+      const coords     = getCurrentCoords();
+      if (!coords) return;
 
-    const getActiveScanInterval = (): number => {
-      const now = getCurrentTime();
-      const currentMins = timeToMinutes(timeToStr(now));
-      const currentDateStr = dateToStr(now);
-      const currentDay = now.getDay();
-      let minInterval = Infinity;
-      for (const profile of profiles.filter(p => p.active)) {
-        if (profile.workingDays.length > 0 && !profile.workingDays.includes(currentDay)) continue;
-        const ci = timeToMinutes(profile.checkInTime);
-        const co = timeToMinutes(profile.checkOutTime);
-        const hasLiveSession = logsRef.current.some(
-          l => l.profileId === profile.id && l.checkOut === null
-            && l.date === currentDateStr && l.status !== 'absent'
-        );
-        const inPreCheckIn = currentMins >= (ci - 15) && currentMins <= (ci + profile.markAbsentAfter);
-        const inCheckOut = currentMins >= (co - 15) && currentMins <= (co + 15);
-        if (hasLiveSession) {
-          const intervalMs = Math.max(1, profile.checkEvery ?? 5) * 60 * 1000;
-          minInterval = Math.min(minInterval, intervalMs);
-        } else if (inPreCheckIn || inCheckOut) {
-          minInterval = Math.min(minInterval, 30 * 1000);
-        }
+      const nowStr     = dateToStr(now);
+      const nowMins    = timeToMinutes(timeToStr(now));
+      const nowDay     = now.getDay();
+
+      // Load dedup for today (lazy, once per day)
+      if (dedupRef.current.size === 0) {
+        dedupRef.current = loadDedup(nowStr);
       }
-      return minInterval === Infinity ? -1 : minInterval;
-    };
 
-    const getMsUntilNextWindow = (): number => {
-      const now = getCurrentTime();
-      const currentMins = timeToMinutes(timeToStr(now));
-      const currentDay = now.getDay();
-      let minWait = 24 * 60 * 60 * 1000;
+      let updatedLogs = [...logsRef.current];
+      let changed     = false;
+
       for (const profile of profiles.filter(p => p.active)) {
-        if (profile.workingDays.length > 0 && !profile.workingDays.includes(currentDay)) continue;
-        const ci = timeToMinutes(profile.checkInTime);
-        const co = timeToMinutes(profile.checkOutTime);
-        for (const windowStart of [ci - 15, co - 15]) {
-          if (windowStart > currentMins) {
-            minWait = Math.min(minWait, (windowStart - currentMins) * 60 * 1000);
+        if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
+
+        const dist      = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
+        const inFence   = dist <= profile.radius;
+        const ciMins    = timeToMinutes(profile.checkInTime);
+        const coMins    = timeToMinutes(profile.checkOutTime);
+        const markAfter = profile.markAbsentAfter;
+        const expMins   = profile.expectedHoursPerDay * 60;
+
+        const hasOpen   = updatedLogs.some(l =>
+          l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
+        const sessionCount = updatedLogs.filter(l =>
+          l.profileId === profile.id && l.date === nowStr && l.status !== 'absent').length;
+
+        // ── AUTO CHECK-IN: geofence entry (Option A — no time window gate) ──
+        if (!hasOpen && inFence) {
+          const absentMarked = updatedLogs.some(
+            l => l.profileId === profile.id && l.date === nowStr && l.status === 'absent');
+          // First check-in key, or re-entry key keyed on session count (not time)
+          const ciKey = sessionCount === 0
+            ? `checkin:${profile.id}:${nowStr}`
+            : `reentry:${profile.id}:${nowStr}:${sessionCount}`;
+
+          if (!absentMarked && !dedupRef.current.has(ciKey)) {
+            const newLog: AttendanceLog = {
+              id: generateId(), profileId: profile.id, profileName: profile.name,
+              date: nowStr, checkIn: now.toISOString(),
+              checkOut: null, duration: null, status: 'auto', profileColor: profile.color, attended: true,
+            };
+            updatedLogs = [...updatedLogs, newLog];
+            dedupRef.current.add(ciKey);
+            saveDedup(dedupRef.current, nowStr);
+            changed = true;
+            notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+          }
+        }
+
+        // Re-evaluate after possible check-in
+        const openLog = updatedLogs.find(
+          l => l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
+
+        // ── AUTO CHECK-OUT: scheduled checkout time ────────────────────────
+        if (openLog && Math.abs(nowMins - coMins) <= 1) {
+          const outKey = `out:${profile.id}:${nowStr}`;
+          if (!dedupRef.current.has(outKey)) {
+            const duration = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
+            updatedLogs = updatedLogs.map(l => l.id === openLog.id
+              ? { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5, status: 'auto' as const }
+              : l);
+            dedupRef.current.add(outKey);
+            saveDedup(dedupRef.current, nowStr);
+            changed = true;
+            notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+          }
+        }
+
+        // ── AUTO CHECK-OUT: geofence exit (Option A) ──────────────────────
+        // Require 2 consecutive out-of-fence ticks (handled via exitPending key)
+        // to avoid GPS jitter triggering premature checkout.
+        if (openLog && !inFence) {
+          const pendingKey = `exitpending:${openLog.id}`;
+          const exitKey    = `exit:${openLog.id}`;
+          const sessionMins = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
+          if (sessionMins >= 5 && !dedupRef.current.has(exitKey)) {
+            if (dedupRef.current.has(pendingKey)) {
+              // Second consecutive out-of-fence tick — fire checkout
+              const duration = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
+              updatedLogs = updatedLogs.map(l => l.id === openLog.id
+                ? { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5, status: 'auto' as const }
+                : l);
+              dedupRef.current.add(exitKey);
+              dedupRef.current.delete(pendingKey);
+              saveDedup(dedupRef.current, nowStr);
+              changed = true;
+              notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+            } else {
+              // First out-of-fence tick — set pending, wait for next tick to confirm
+              dedupRef.current.add(pendingKey);
+              saveDedup(dedupRef.current, nowStr);
+            }
+          }
+        } else if (openLog && inFence) {
+          // Back inside — clear any pending exit
+          dedupRef.current.delete(`exitpending:${openLog.id}`);
+        }
+
+        // ── MARK ABSENT: no entry after checkInTime + markAbsentAfter ─────
+        // Only if not currently inside geofence (if inside, they're just late)
+        if (!openLog && !inFence && nowMins > ciMins + markAfter) {
+          const absentKey = `absent:${profile.id}:${nowStr}`;
+          const hasAnyLog = updatedLogs.some(l => l.profileId === profile.id && l.date === nowStr);
+          if (!hasAnyLog && !dedupRef.current.has(absentKey)) {
+            updatedLogs = [...updatedLogs, {
+              id: generateId(), profileId: profile.id, profileName: profile.name,
+              date: nowStr,
+              checkIn: `${nowStr}T${profile.checkInTime}:00+05:30`,
+              checkOut: null, duration: null, status: 'absent' as const,
+              profileColor: profile.color, attended: false,
+            }];
+            dedupRef.current.add(absentKey);
+            saveDedup(dedupRef.current, nowStr);
+            changed = true;
+            notifyAbsent(profile.name);
           }
         }
       }
-      return minWait;
+
+      if (changed) { setLogs(updatedLogs); logsRef.current = updatedLogs; saveLogs(updatedLogs); }
     };
+
+    // ── Smart scheduler (mirrors Java scheduleNext) ────────────────────────
+    let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleNext = () => {
       if (schedulerTimer) clearTimeout(schedulerTimer);
-      const interval = getActiveScanInterval();
-      if (interval > 0) {
-        tick(false);
-        schedulerTimer = setTimeout(scheduleNext, interval);
+      const now      = getCurrentTime();
+      const nowMins  = timeToMinutes(timeToStr(now));
+      const nowStr   = dateToStr(now);
+      const nowDay   = now.getDay();
+
+      let hasOpen      = false;
+      let checkEveryMs = 30_000;
+      let inWindow     = false;
+      let msToNext     = Infinity;
+
+      for (const profile of profiles.filter(p => p.active)) {
+        if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
+        const ciMins  = timeToMinutes(profile.checkInTime);
+        const coMins  = timeToMinutes(profile.checkOutTime);
+        const markAfter = profile.markAbsentAfter;
+        const freq    = Math.max(1, profile.checkEvery ?? 5);
+
+        if (logsRef.current.some(l =>
+          l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent')) {
+          hasOpen = true;
+          checkEveryMs = Math.min(checkEveryMs, freq * 60_000);
+        }
+
+        const ciWindowStart = ciMins - 15;
+        const ciWindowEnd   = ciMins + markAfter;
+        const coWindowStart = coMins - 15;
+        const coWindowEnd   = coMins + 15;
+
+        if ((nowMins >= ciWindowStart && nowMins <= ciWindowEnd) ||
+            (nowMins >= coWindowStart && nowMins <= coWindowEnd)) {
+          inWindow = true;
+        }
+
+        for (const ws of [ciWindowStart, coWindowStart]) {
+          const minsUntil = ws - nowMins;
+          if (minsUntil > 0) msToNext = Math.min(msToNext, minsUntil * 60_000);
+        }
+      }
+
+      if (hasOpen) {
+        tick();
+        schedulerTimer = setTimeout(scheduleNext, Math.max(30_000, checkEveryMs));
+      } else if (inWindow) {
+        tick();
+        schedulerTimer = setTimeout(scheduleNext, 30_000);
       } else {
-        const waitMs = getMsUntilNextWindow();
-        schedulerTimer = setTimeout(scheduleNext, waitMs);
+        // Sleep until 15 min before next window
+        const sleepMs = msToNext === Infinity
+          ? 60 * 60_000
+          : Math.max(60_000, msToNext - 15 * 60_000);
+        schedulerTimer = setTimeout(scheduleNext, sleepMs);
       }
     };
 
+    // Initial catch-up tick then start scheduler
+    tick();
     scheduleNext();
     return () => { if (schedulerTimer) clearTimeout(schedulerTimer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profiles, simulation, currentPosition, getCurrentTime, getCurrentCoords]);
 
-  // ── Profile CRUD — FIX 2: sync to native after every change ───────────────
+  // ── Profile CRUD ─────────────────────────────────────────────────────────
   const addProfile = useCallback((profile: Omit<LocationProfile, 'id' | 'color'>) => {
     const newProfile: LocationProfile = {
-      ...profile,
-      id: generateId(),
-      color: ['#10b981', '#f59e0b', '#6366f1', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6'][profiles.length % 7],
+      ...profile, id: generateId(),
+      color: ['#10b981','#f59e0b','#6366f1','#ef4444','#8b5cf6','#ec4899','#14b8a6'][profiles.length % 7],
     };
     const updated = [...profiles, newProfile];
-    setProfiles(updated);
-    saveProfiles(updated);
-    syncProfilesToNative(updated); // FIX 2
+    setProfiles(updated); saveProfiles(updated); syncProfilesToNative(updated);
   }, [profiles]);
 
   const updateProfile = useCallback((id: string, data: Partial<LocationProfile>) => {
     const updated = profiles.map(p => p.id === id ? { ...p, ...data } : p);
-    setProfiles(updated);
-    saveProfiles(updated);
-    syncProfilesToNative(updated); // FIX 2
+    setProfiles(updated); saveProfiles(updated); syncProfilesToNative(updated);
   }, [profiles]);
 
   const deleteProfile = useCallback((id: string) => {
     const updated = profiles.filter(p => p.id !== id);
-    setProfiles(updated);
-    saveProfiles(updated);
-    syncProfilesToNative(updated); // FIX 2
+    setProfiles(updated); saveProfiles(updated); syncProfilesToNative(updated);
   }, [profiles]);
 
   const toggleProfile = useCallback((id: string) => {
     const updated = profiles.map(p => p.id === id ? { ...p, active: !p.active } : p);
-    setProfiles(updated);
-    saveProfiles(updated);
-    syncProfilesToNative(updated); // FIX 2
+    setProfiles(updated); saveProfiles(updated); syncProfilesToNative(updated);
   }, [profiles]);
 
-  // Manual check-in
+  // ── Manual overrides ─────────────────────────────────────────────────────
   const manualCheckIn = useCallback((profileId: string) => {
     const profile = profiles.find(p => p.id === profileId);
     if (!profile) return;
     const now = getCurrentTime();
-    const currentDateStr = dateToStr(now);
+    const todayStr = dateToStr(now);
     const alreadyOpen = logsRef.current.some(
-      l => l.profileId === profileId && l.checkOut === null
-        && l.date === currentDateStr && l.status !== 'absent'
-    );
+      l => l.profileId === profileId && l.checkOut === null && l.date === todayStr && l.status !== 'absent');
     if (alreadyOpen) return;
     const newLog: AttendanceLog = {
-      id: generateId(), profileId, profileName: profile.name,
-      date: currentDateStr, checkIn: now.toISOString(),
-      checkOut: null, duration: null, status: 'manual',
-      profileColor: profile.color, attended: true,
+      id: generateId(), profileId, profileName: profile.name, date: todayStr,
+      checkIn: now.toISOString(), checkOut: null, duration: null,
+      status: 'manual', profileColor: profile.color, attended: true,
     };
     const updated = [...logsRef.current, newLog];
-    setLogs(updated);
-    logsRef.current = updated;
-    saveLogs(updated);
+    setLogs(updated); logsRef.current = updated; saveLogs(updated);
   }, [profiles, getCurrentTime]);
 
-  // Manual check-out
   const manualCheckOut = useCallback((profileId?: string) => {
     const now = getCurrentTime();
-    const currentDateStr = dateToStr(now);
-    let updated = [...logsRef.current];
-    if (profileId) {
-      updated = updated.map(l => {
-        if (l.profileId === profileId && l.checkOut === null && l.date === currentDateStr) {
-          const duration = (now.getTime() - new Date(l.checkIn).getTime()) / 60000;
-          const profile = profiles.find(p => p.id === profileId);
-          const expectedMinutes = (profile?.expectedHoursPerDay ?? 8) * 60;
-          return { ...l, checkOut: now.toISOString(), duration: Math.round(duration), attended: duration >= expectedMinutes * 0.5 };
-        }
-        return l;
-      });
-    } else {
-      updated = updated.map(l => {
-        if (l.checkOut === null) {
-          const duration = (now.getTime() - new Date(l.checkIn).getTime()) / 60000;
-          const profile = profiles.find(p => p.id === l.profileId);
-          const expectedMinutes = (profile?.expectedHoursPerDay ?? 8) * 60;
-          return { ...l, checkOut: now.toISOString(), duration: Math.round(duration), attended: duration >= expectedMinutes * 0.5 };
-        }
-        return l;
-      });
-    }
-    setLogs(updated);
-    logsRef.current = updated;
-    saveLogs(updated);
+    const todayStr = dateToStr(now);
+    const updated = logsRef.current.map(l => {
+      // Only close today's open sessions (fixes Bug 7 — stale cross-day close)
+      if (l.checkOut !== null || l.date !== todayStr || l.status === 'absent') return l;
+      if (profileId && l.profileId !== profileId) return l;
+      const duration = safeDuration(now.getTime() - new Date(l.checkIn).getTime());
+      const profile  = profiles.find(p => p.id === l.profileId);
+      const expMins  = (profile?.expectedHoursPerDay ?? 8) * 60;
+      return { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5 };
+    });
+    setLogs(updated); logsRef.current = updated; saveLogs(updated);
   }, [profiles, getCurrentTime]);
 
+  // ── Simulation ───────────────────────────────────────────────────────────
   const updateSimulation = useCallback((sim: Partial<SimulationState>) => {
     const updated = { ...simulation, ...sim };
-    setSimulation(updated);
-    saveSimulation(updated);
+    setSimulation(updated); saveSimulation(updated);
   }, [simulation]);
 
+  // ── Summary helpers ──────────────────────────────────────────────────────
   const getWeeklyHours = useCallback(() => {
     const now = getCurrentTime();
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
-    const weekLogs = logsRef.current.filter(l => {
-      const d = new Date(l.checkIn);
-      return d >= startOfWeek && l.duration !== null && l.status !== 'absent';
-    });
-    return weekLogs.reduce((sum, l) => sum + (l.duration || 0), 0);
+    return logsRef.current
+      .filter(l => new Date(l.checkIn) >= startOfWeek && l.duration !== null && l.status !== 'absent')
+      .reduce((sum, l) => sum + (l.duration || 0), 0);
   }, [getCurrentTime]);
 
   const getTodayStatus = useCallback(() => {
     const now = getCurrentTime();
     const todayStr = dateToStr(now);
     const todayLogs = logsRef.current.filter(l => l.date === todayStr);
-    const openSessions = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
-    const totalMinutes = todayLogs.filter(l => l.status !== 'absent').reduce((sum, l) => sum + (l.duration || 0), 0);
-    return { checkedIn: openSessions.length > 0, totalMinutes, logCount: todayLogs.length, openSessions };
+    const open = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
+    const totalMinutes = todayLogs
+      .filter(l => l.status !== 'absent')
+      .reduce((s, l) => s + (l.duration || 0), 0);
+    return { checkedIn: open.length > 0, totalMinutes, logCount: todayLogs.length, openSessions: open };
   }, [getCurrentTime]);
 
   const clearLogs = useCallback(() => {
-    setLogs([]);
-    logsRef.current = [];
-    saveLogs([]);
+    setLogs([]); logsRef.current = []; saveLogs([]);
   }, []);
 
   return {
@@ -606,9 +528,4 @@ export function useAutomation() {
     manualCheckIn, manualCheckOut, updateSimulation,
     getWeeklyHours, getTodayStatus, clearLogs,
   };
-}
-
-function timeToMinutes(timeStr: string): number {
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + (m || 0);
 }

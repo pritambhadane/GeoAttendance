@@ -32,7 +32,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
   const [checkOutTime, setCheckOutTime] = useState('17:00');
   const [expectedHoursPerDay, setExpectedHoursPerDay] = useState(8);
   const [customHours, setCustomHours] = useState('');
-  const [checkFrequency, setCheckFrequency] = useState(5);
+  const [checkEvery, setCheckEvery] = useState(5);
   const [markAbsentAfter, setMarkAbsentAfter] = useState(30);
   const [customAbsent, setCustomAbsent] = useState('');
   const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
@@ -75,7 +75,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
       checkOutTime,
       active: true,
       expectedHoursPerDay: effectiveHours,
-      checkFrequency,
+      checkEvery,
       markAbsentAfter: effectiveAbsent,
       workingDays,
     };
@@ -101,7 +101,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
     const isPresetHours = HOURS_PRESETS.includes(p.expectedHoursPerDay);
     setExpectedHoursPerDay(isPresetHours ? p.expectedHoursPerDay : HOURS_PRESETS[0]);
     setCustomHours(isPresetHours ? '' : p.expectedHoursPerDay.toString());
-    setCheckFrequency(p.checkFrequency);
+    setCheckEvery(p.checkEvery);
     const isPresetAbsent = ABSENT_OPTIONS.includes(p.markAbsentAfter);
     setMarkAbsentAfter(isPresetAbsent ? p.markAbsentAfter : ABSENT_OPTIONS[0]);
     setCustomAbsent(isPresetAbsent ? '' : p.markAbsentAfter.toString());
@@ -287,7 +287,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
                       key={f}
                       onClick={() => setCheckFrequency(f)}
                       className={`rounded-lg px-2 py-1 text-xs font-medium transition ${
-                        checkFrequency === f
+                        checkEvery === f
                           ? 'bg-indigo-600 text-white shadow-sm'
                           : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
                       }`}
@@ -416,7 +416,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
                   {p.expectedHoursPerDay}h/day
                 </span>
                 <span className="rounded-lg bg-amber-50 text-amber-700 px-2.5 py-1 dark:bg-amber-950 dark:text-amber-300">
-                  Check every {p.checkFrequency}m
+                  Check every {p.checkEvery}m
                 </span>
                 <span className="rounded-lg bg-rose-50 text-rose-700 px-2.5 py-1 dark:bg-rose-950 dark:text-rose-300">
                   Absent after {p.markAbsentAfter}m
