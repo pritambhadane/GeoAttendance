@@ -43,7 +43,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
     setCustomRadius('');
     setCheckInTime('09:00'); setCheckOutTime('17:00');
     setExpectedHoursPerDay(8); setCustomHours('');
-    setCheckFrequency(5); setMarkAbsentAfter(30); setCustomAbsent('');
+    setCheckEvery(5); setMarkAbsentAfter(30); setCustomAbsent('');
     setWorkingDays([1, 2, 3, 4, 5]);
     setEditingId(null);
   };
@@ -285,7 +285,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
                   {FREQUENCY_OPTIONS.map(f => (
                     <button
                       key={f}
-                      onClick={() => setCheckFrequency(f)}
+                      onClick={() => setCheckEvery(f)}
                       className={`rounded-lg px-2 py-1 text-xs font-medium transition ${
                         checkEvery === f
                           ? 'bg-indigo-600 text-white shadow-sm'
