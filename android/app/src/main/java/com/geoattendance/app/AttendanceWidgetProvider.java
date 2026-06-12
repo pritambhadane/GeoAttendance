@@ -96,6 +96,9 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         }
 
         appWidgetManager.updateAppWidget(widgetId, views);
+        // Force the RemoteViewsFactory to reload — without this the ListView
+        // stays stuck on "Loading…" because onDataSetChanged is never invoked.
+        appWidgetManager.notifyAppWidgetViewDataChanged(widgetId, R.id.widget_log_list);
     }
 
     private static String formatRelativeTime(long timestampMs) {
