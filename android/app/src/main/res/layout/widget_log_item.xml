@@ -86,4 +86,6 @@
             android:layout_marginStart="6dp" />
     </LinearLayout>
 
+    </LinearLayout>
+
 </LinearLayout>
