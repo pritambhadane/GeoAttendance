@@ -388,21 +388,8 @@ public class AttendanceForegroundService extends Service {
                 // Re-evaluate after possible check-in
                 hasOpenSession = hasOpenSession(logs, profileId, currentDateStr);
 
-                // ── AUTO CHECK-OUT: scheduled checkout time ──────────────────
-                if (hasOpenSession) {
-                    boolean inOutWindow = Math.abs(currentMinutes - coMins) <= 1;
-                    boolean alreadyOut  = isProcessed(profileId, currentDateStr, "out:" + checkOutTime);
-                    if (inOutWindow && !alreadyOut) {
-                        logs = closeOpenSession(logs, profileId, currentDateStr, now, expectedHrs);
-                        logsChanged = true;
-                        markProcessed(profileId, currentDateStr, "out:" + checkOutTime);
-                        exitDetectedAt.remove(profileId);
-                        sendEventNotification("🚪 Checked Out – " + profileName,
-                                "Auto check-out at " + currentTimeStr);
-                        Log.i(TAG, "CHECKOUT (scheduled): " + profileName + " at " + currentTimeStr);
-                        hasOpenSession = false;
-                    }
-                }
+                // NOTE: Scheduled checkout by time has been intentionally removed.
+                // Auto check-out fires ONLY on geofence exit (see block below).
 
                 // ── AUTO CHECK-OUT: geofence exit ────────────────────────────
                 if (hasOpenSession && !isWithin) {

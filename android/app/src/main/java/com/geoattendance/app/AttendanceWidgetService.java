@@ -37,7 +37,13 @@ public class AttendanceWidgetService extends RemoteViewsService {
             this.context = context;
         }
 
-        @Override public void onCreate() {}
+        @Override
+        public void onCreate() {
+            // Load data immediately on creation.
+            // On some Android versions onDataSetChanged is NOT called after onCreate,
+            // so the list would stay stuck on "Loading..." without this.
+            onDataSetChanged();
+        }
 
         @Override
         public void onDataSetChanged() {
