@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import {
-  LayoutDashboard, MapPin, Sliders, Calendar, Share2,
+  LayoutDashboard, MapPin, Calendar, Share2,
   Menu, X, Radio, Sun, Moon, BarChart3, Crosshair, Clock,
   BatteryWarning,
 } from 'lucide-react';
@@ -9,19 +9,18 @@ import { ThemeProvider, useTheme } from './hooks/useTheme';
 import { useAutomation } from './hooks/useAutomation';
 import Dashboard from './components/Dashboard';
 import ProfilesManager from './components/ProfilesManager';
-import SimulationPanel from './components/SimulationPanel';
 import AttendanceHistory from './components/AttendanceHistory';
 import ExportSuite from './components/ExportSuite';
 import MonthlySummary from './components/MonthlySummary';
+import PermissionOnboarding from './components/PermissionOnboarding';
 import { AttendanceServicePlugin, isNativeServiceAvailable } from './services/nativePlugin';
-import { getProfiles, getLogs } from './utils/storage';
+import { getProfiles, getLogs, isOnboardingComplete } from './utils/storage';
 
-type Tab = 'dashboard' | 'profiles' | 'simulation' | 'history' | 'monthly' | 'export';
+type Tab = 'dashboard' | 'profiles' | 'history' | 'monthly' | 'export';
 
 const TABS: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'profiles', label: 'Profiles', icon: MapPin },
-  { id: 'simulation', label: 'Simulate', icon: Sliders },
   { id: 'history', label: 'History', icon: Calendar },
   { id: 'monthly', label: 'Monthly', icon: BarChart3 },
   { id: 'export', label: 'Export', icon: Share2 },
@@ -32,8 +31,13 @@ function AppContent() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [nowClock, setNowClock] = useState(() => new Date());
   const [showBatteryBanner, setShowBatteryBanner] = useState(false);
+  const [onboardingDone, setOnboardingDone] = useState(() => isOnboardingComplete());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
+
+  if (!onboardingDone) {
+    return <PermissionOnboarding onComplete={() => setOnboardingDone(true)} />;
+  }
 
   // ── Start native ForegroundService on app launch ─────────────────────────
   useEffect(() => {
@@ -115,13 +119,6 @@ function AppContent() {
             onToggle={automation.toggleProfile}
           />
         );
-      case 'simulation':
-        return (
-          <SimulationPanel
-            simulation={automation.simulation}
-            onUpdate={automation.updateSimulation}
-          />
-        );
       case 'history':
         return (
           <AttendanceHistory
@@ -188,12 +185,6 @@ function AppContent() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {automation.simulation.enabled && (
-                <span className="rounded-lg bg-amber-100 text-amber-700 px-2 py-0.5 text-xs font-semibold flex items-center gap-1 dark:bg-amber-950 dark:text-amber-300">
-                  <Sliders className="h-3 w-3" />
-                  SIM
-                </span>
-              )}
               {trackingStatus === 'checked-in' && (
                 <span className="rounded-lg bg-emerald-100 text-emerald-700 px-2 py-0.5 text-xs font-semibold flex items-center gap-1 animate-pulse dark:bg-emerald-950 dark:text-emerald-300">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />

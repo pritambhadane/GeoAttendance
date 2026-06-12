@@ -3,6 +3,7 @@ import {
 } from 'lucide-react';
 import { AttendanceLog } from '../types';
 import { formatDuration } from '../utils/storage';
+import { isNative } from '../services/capacitor';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -16,26 +17,88 @@ function statusLabel(log: AttendanceLog): string {
   return log.status === 'auto' ? 'Auto' : 'Manual';
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getFilesystemPlugin(): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (window as any).Capacitor?.Plugins?.Filesystem ?? null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function getSharePlugin(): any {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (window as any).Capacitor?.Plugins?.Share ?? null;
+}
+
+/**
+ * Save a file's contents and trigger the native share sheet so the user can
+ * save it to Downloads, send via WhatsApp, etc. On web, falls back to the
+ * standard blob download via an anchor tag.
+ */
+async function saveAndShare(filename: string, mimeType: string, base64Data: string, rawBlobData?: BlobPart) {
+  if (isNative()) {
+    const fs = getFilesystemPlugin();
+    const share = getSharePlugin();
+    if (fs) {
+      try {
+        const result = await fs.writeFile({
+          path: filename,
+          data: base64Data,
+          directory: 'CACHE',
+        });
+        if (share) {
+          await share.share({
+            title: filename,
+            url: result.uri,
+            dialogTitle: `Share ${filename}`,
+          });
+        }
+        return;
+      } catch (e) {
+        console.error('Native file save failed:', e);
+        alert(`Could not save ${filename}. ${e instanceof Error ? e.message : ''}`);
+        return;
+      }
+    }
+  }
+
+  // Web fallback
+  const blob = new Blob([rawBlobData ?? base64ToBytes(base64Data)], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function textToBase64(text: string): string {
+  // btoa requires latin1; encode UTF-8 safely first
+  return btoa(unescape(encodeURIComponent(text)));
+}
+
 export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
-  const exportCSV = () => {
+  const exportCSV = async () => {
     const header = 'Date,Profile,Check-In,Check-Out,Duration (min),Status,Attended\n';
     const rows = logs.map(l => {
-      const ci = l.status === 'absent'
-        ? new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        : new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const ci = new Date(l.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const co = l.checkOut ? new Date(l.checkOut).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '--';
       return `${l.date},"${l.profileName}",${ci},${co},${l.duration ?? '--'},${statusLabel(l)},${l.attended ? 'Yes' : 'No'}`;
     }).join('\n');
-    const blob = new Blob([header + rows], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `attendance_${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const csvText = header + rows;
+    const filename = `attendance_${new Date().toISOString().slice(0, 10)}.csv`;
+    await saveAndShare(filename, 'text/csv', textToBase64(csvText), csvText);
   };
 
-  const exportPDF = () => {
+  const exportPDF = async () => {
     const doc = new jsPDF();
     doc.setFontSize(18);
     doc.setTextColor(30, 41, 59);
@@ -77,7 +140,13 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
       },
     });
 
-    doc.save(`attendance_${new Date().toISOString().slice(0, 10)}.pdf`);
+    const filename = `attendance_${new Date().toISOString().slice(0, 10)}.pdf`;
+    if (isNative()) {
+      const base64 = doc.output('datauristring').split(',')[1];
+      await saveAndShare(filename, 'application/pdf', base64);
+    } else {
+      doc.save(filename);
+    }
   };
 
   const shareWhatsApp = () => {

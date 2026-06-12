@@ -3,6 +3,15 @@ import { LocationProfile, AttendanceLog, SimulationState } from '../types';
 const PROFILES_KEY = 'geo_attendance_profiles';
 const LOGS_KEY = 'geo_attendance_logs';
 const SIM_KEY = 'geo_attendance_simulation';
+const ONBOARDING_KEY = 'geo_attendance_onboarding_done';
+
+export function isOnboardingComplete(): boolean {
+  return localStorage.getItem(ONBOARDING_KEY) === 'true';
+}
+
+export function setOnboardingComplete(): void {
+  localStorage.setItem(ONBOARDING_KEY, 'true');
+}
 
 export function getProfiles(): LocationProfile[] {
   const data = localStorage.getItem(PROFILES_KEY);

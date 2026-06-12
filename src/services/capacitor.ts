@@ -87,6 +87,8 @@ export async function requestLocationPermission(): Promise<boolean> {
   const plugin = getGeoPlugin();
   if (plugin) {
     try {
+      // Requesting with no `types` arg asks for both fine/coarse and, on
+      // Android 10+ where declared in the manifest, background location.
       const result = await plugin.requestPermissions();
       return result.location === 'granted';
     } catch {
