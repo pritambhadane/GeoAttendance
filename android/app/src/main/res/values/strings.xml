@@ -4,4 +4,5 @@
     <string name="title_activity_main">GeoAttendance</string>
     <string name="package_name">com.geoattendance.app</string>
     <string name="custom_url_scheme">com.geoattendance.app</string>
+    <string name="widget_description">Shows last 4 days of attendance and the last GPS location scanned</string>
 </resources>

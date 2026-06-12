@@ -153,6 +153,7 @@ public class AttendanceForegroundService extends Service {
                     lastLocation = location;
                     Log.d(TAG, String.format("GPS: %.5f,%.5f acc=%.0fm",
                             location.getLatitude(), location.getLongitude(), location.getAccuracy()));
+                    saveLastLocation(location);
                     runTick(false);
                 }
                 @Override public void onProviderEnabled(@NonNull String p) {}
@@ -661,6 +662,22 @@ public class AttendanceForegroundService extends Service {
     private void saveLogs(JSONArray logs) {
         getSharedPreferences(PREFS_LOGS, MODE_PRIVATE)
                 .edit().putString("logs", logs.toString()).apply();
+        AttendanceWidgetProvider.refreshAll(this);
+    }
+
+    /**
+     * Persists the most recent GPS fix (lat/lng/accuracy/timestamp) so the
+     * home-screen widget can show "last location scanned" even when the
+     * activity/UI is not running.
+     */
+    private void saveLastLocation(Location location) {
+        getSharedPreferences(PREFS_STATE, MODE_PRIVATE).edit()
+                .putFloat("lastLocLat", (float) location.getLatitude())
+                .putFloat("lastLocLng", (float) location.getLongitude())
+                .putFloat("lastLocAccuracy", location.getAccuracy())
+                .putLong("lastLocTimestamp", System.currentTimeMillis())
+                .apply();
+        AttendanceWidgetProvider.refreshAll(this);
     }
 
     private void updateStateSnapshot(JSONArray logs) {
@@ -690,6 +707,7 @@ public class AttendanceForegroundService extends Service {
                 .putString("todayStatus", todayStatus)
                 .putLong("lastUpdated", System.currentTimeMillis())
                 .apply();
+        AttendanceWidgetProvider.refreshAll(this);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

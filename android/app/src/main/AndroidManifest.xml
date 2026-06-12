@@ -77,6 +77,24 @@
             </intent-filter>
         </receiver>
 
+        <!-- ── NEW: Home-screen widget — attendance summary + last location ── -->
+        <receiver
+            android:name=".AttendanceWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="com.geoattendance.app.WIDGET_REFRESH" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_attendance_info" />
+        </receiver>
+
+        <service
+            android:name=".AttendanceWidgetService"
+            android:permission="android.permission.BIND_REMOTEVIEWS"
+            android:exported="false" />
+
         <!-- REMOVED: BackgroundGeolocationService — replaced by AttendanceForegroundService -->
         <!--
         <service
