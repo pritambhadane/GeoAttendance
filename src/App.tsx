@@ -4,6 +4,7 @@ import {
   Menu, X, Radio, Sun, Moon, BarChart3, Crosshair, Clock,
   BatteryWarning,
 } from 'lucide-react';
+// Note: manualCheckIn and manualCheckOut removed — attendance is geofence-only.
 import { ThemeProvider, useTheme } from './hooks/useTheme';
 import { useAutomation } from './hooks/useAutomation';
 import Dashboard from './components/Dashboard';
@@ -100,8 +101,6 @@ function AppContent() {
             weeklyMinutes={weeklyMinutes}
             todayStatus={todayStatus}
             profiles={automation.profiles}
-            onManualCheckIn={automation.manualCheckIn}
-            onManualCheckOut={automation.manualCheckOut}
             positionError={automation.positionError}
             currentCoords={currentCoords}
           />

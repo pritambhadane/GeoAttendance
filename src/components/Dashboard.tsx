@@ -1,5 +1,5 @@
 import {
-  MapPin, Clock, CheckCircle2, LogOut, Timer, Activity,
+  MapPin, Clock, Timer, Activity,
   TrendingUp, CalendarDays, Radio, Users, Crosshair,
 } from 'lucide-react';
 import { AttendanceLog, LocationProfile, TrackingStatus } from '../types';
@@ -15,22 +15,17 @@ interface DashboardProps {
     openSessions: AttendanceLog[];
   };
   profiles: LocationProfile[];
-  onManualCheckIn: (profileId: string) => void;
-  onManualCheckOut: (profileId?: string) => void;
   positionError: string | null;
   currentCoords: { latitude: number; longitude: number; accuracy: number; timestamp: number } | null;
 }
 
 export default function Dashboard({
   trackingStatus, weeklyMinutes, todayStatus, profiles,
-  onManualCheckIn, onManualCheckOut, positionError, currentCoords,
+  positionError, currentCoords,
 }: DashboardProps) {
   const activeProfiles = profiles.filter(p => p.active);
   const { openSessions } = todayStatus;
-
-  // Determine which profiles are currently checked in
   const checkedInProfileIds = new Set(openSessions.map(s => s.profileId));
-  const profilesToCheckIn = activeProfiles.filter(p => !checkedInProfileIds.has(p.id));
 
   return (
     <div className="space-y-6">
@@ -46,7 +41,9 @@ export default function Dashboard({
           <h2 className="text-2xl font-bold mb-1">
             {todayStatus.checkedIn
               ? `${openSessions.length} Session${openSessions.length > 1 ? 's' : ''} Active`
-              : trackingStatus === 'checked-out' ? 'Checked Out' : 'Not Active'}
+              : trackingStatus === 'checked-out' ? 'Checked Out'
+              : trackingStatus === 'tracking' ? 'Scanning…'
+              : 'Not Active'}
           </h2>
           {openSessions.length > 0 && (
             <div className="mt-1 flex flex-wrap gap-1.5">
@@ -75,13 +72,13 @@ export default function Dashboard({
           {currentCoords && (
             <div className="mt-3 flex items-center gap-1.5 text-emerald-200 text-xs">
               <Clock className="h-3 w-3" />
-              Last location check: {new Date(currentCoords.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              Last scan: {new Date(currentCoords.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
             </div>
           )}
         </div>
       </div>
 
-      {/* Active Sessions Card - shows when multiple profiles are tracked */}
+      {/* Active Sessions Card */}
       {openSessions.length > 0 && (
         <div className="card p-5">
           <div className="flex items-center gap-2 mb-3">
@@ -100,32 +97,20 @@ export default function Dashboard({
                       Since {new Date(s.checkIn).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">{formatDuration(elapsed)}</span>
-                    <button
-                      onClick={() => onManualCheckOut(s.profileId)}
-                      className="rounded-lg bg-rose-100 text-rose-600 px-2 py-1 text-xs font-medium hover:bg-rose-200 transition flex items-center gap-1 dark:bg-rose-950 dark:text-rose-300 dark:hover:bg-rose-900"
-                    >
-                      <LogOut className="h-3 w-3" /> Out
-                    </button>
-                  </div>
+                  <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                    {formatDuration(elapsed)}
+                  </span>
                 </div>
               );
             })}
-            {openSessions.length > 1 && (
-              <button
-                onClick={() => onManualCheckOut()}
-                className="w-full rounded-xl bg-gradient-to-r from-red-500 to-rose-600 text-white font-semibold py-2.5 px-4 flex items-center justify-center gap-2 hover:from-red-600 hover:to-rose-700 transition-all shadow-sm active:scale-[0.98] text-sm"
-              >
-                <LogOut className="h-4 w-4" />
-                Check Out All
-              </button>
-            )}
+            <p className="text-xs text-slate-500 dark:text-slate-400 text-center pt-1">
+              Check-out happens automatically when you leave the geofence or at scheduled time.
+            </p>
           </div>
         </div>
       )}
 
-      {/* Map Indicator Card */}
+      {/* Current Location Card */}
       <div className="card p-5">
         <div className="flex items-center gap-2 mb-3">
           <MapPin className="h-5 w-5 text-teal-600 dark:text-teal-400" />
@@ -152,29 +137,27 @@ export default function Dashboard({
         )}
         {!currentCoords && !positionError && (
           <div className="card-inner p-3 text-sm text-sub">
-            Acquiring GPS position...
+            Acquiring GPS position…
           </div>
         )}
 
-        {/* Geofence visual - shows ALL active profiles */}
+        {/* Geofence status for all active profiles */}
         {activeProfiles.length > 0 && currentCoords && (
           <div className="mt-3 space-y-2">
             {activeProfiles.map(p => {
-              const dist = calculateDistance(currentCoords.latitude, currentCoords.longitude, p.latitude, p.longitude);
-              const within = dist <= p.radius;
-              const isCheckedIn = checkedInProfileIds.has(p.id);
+              const dist    = calculateDistance(currentCoords.latitude, currentCoords.longitude, p.latitude, p.longitude);
+              const within  = dist <= p.radius;
+              const isIn    = checkedInProfileIds.has(p.id);
               return (
                 <div key={p.id} className={`rounded-xl p-3 text-sm flex items-center gap-2 ${
-                  isCheckedIn
+                  isIn || within
                     ? 'bg-emerald-50 border border-emerald-200 text-emerald-700 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-300'
-                    : within
-                      ? 'bg-emerald-50 border border-emerald-200 text-emerald-700 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-300'
-                      : 'card-inner text-slate-600 dark:text-slate-400'
+                    : 'card-inner text-slate-600 dark:text-slate-400'
                 }`}>
                   <div className="h-3 w-3 rounded-full" style={{ backgroundColor: p.color }} />
                   <span className="font-medium">{p.name}</span>
                   <span className="ml-auto text-xs">
-                    {isCheckedIn ? 'Checked In' : within ? 'In Range' : `~${Math.round(dist)}m away`}
+                    {isIn ? 'Checked In' : within ? 'In Range' : `~${Math.round(dist)}m away`}
                   </span>
                 </div>
               );
@@ -182,50 +165,6 @@ export default function Dashboard({
           </div>
         )}
       </div>
-
-      {/* Quick Actions - Check in to profiles not yet checked in */}
-      {profilesToCheckIn.length > 0 && openSessions.length === 0 ? (
-        <div className="card p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <Activity className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
-            <h3 className="font-semibold text-heading">Quick Actions</h3>
-          </div>
-          <div className="space-y-2">
-            {profilesToCheckIn.map(p => (
-              <button
-                key={p.id}
-                onClick={() => onManualCheckIn(p.id)}
-                className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-semibold py-3 px-4 flex items-center justify-center gap-2 hover:from-emerald-600 hover:to-teal-700 transition-all shadow-sm active:scale-[0.98]"
-              >
-                <CheckCircle2 className="h-5 w-5" />
-                Check In — {p.name}
-              </button>
-            ))}
-            {activeProfiles.length === 0 && (
-              <p className="text-sub text-sm text-center py-3">No active profiles. Enable a profile or create one.</p>
-            )}
-          </div>
-        </div>
-      ) : profilesToCheckIn.length > 0 ? (
-        <div className="card p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <Activity className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
-            <h3 className="font-semibold text-heading">Check Into More Profiles</h3>
-          </div>
-          <div className="space-y-2">
-            {profilesToCheckIn.map(p => (
-              <button
-                key={p.id}
-                onClick={() => onManualCheckIn(p.id)}
-                className="w-full rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 text-white font-semibold py-2.5 px-4 flex items-center justify-center gap-2 hover:from-emerald-600 hover:to-teal-700 transition-all shadow-sm active:scale-[0.98] text-sm"
-              >
-                <CheckCircle2 className="h-4 w-4" />
-                Check In — {p.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-4">
@@ -238,7 +177,7 @@ export default function Dashboard({
         </div>
         <div className="card p-4">
           <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 mb-2">
-            <TrendingUp className="h-4 w-4" />
+            <Activity className="h-4 w-4" />
             <span className="text-xs font-medium uppercase tracking-wide">Active Profiles</span>
           </div>
           <p className="text-2xl font-bold text-heading">{activeProfiles.length}</p>

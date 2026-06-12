@@ -19,16 +19,7 @@ import {
 import { AttendanceServicePlugin, isNativeServiceAvailable } from '../services/nativePlugin';
 
 // ── Dedup key store ──────────────────────────────────────────────────────────
-// Keys are per-profile per-date strings stored in localStorage.
-// Format:  "checkin:{profileId}:{date}"          — first check-in of the day
-//          "reentry:{profileId}:{date}:{n}"       — nth re-entry (n = session count)
-//          "exit:{logId}"                         — geofence-exit checkout
-//          "out:{profileId}:{date}"               — scheduled-time checkout
-//          "absent:{profileId}:{date}"            — absent mark
-// Cleared at midnight via date-filter on load.
-
 const PROCESSED_KEY = 'geo_attendance_processed_v2';
-
 interface DedupEntry { key: string; date: string; }
 
 function loadDedup(currentDate: string): Set<string> {
@@ -101,18 +92,18 @@ export function useAutomation() {
   const [currentPosition, setCurrentPosition] = useState<PositionData | null>(null);
   const [positionError, setPositionError]     = useState<string | null>(null);
 
-  const logsRef    = useRef<AttendanceLog[]>(logs);
-  const dedupRef   = useRef<Set<string>>(new Set());  // loaded lazily in tick
+  const logsRef  = useRef<AttendanceLog[]>(logs);
+  const dedupRef = useRef<Set<string>>(new Set());
 
   useEffect(() => { logsRef.current = logs; }, [logs]);
 
-  // ── Permissions ──────────────────────────────────────────────────────────
+  // ── Permissions ─────────────────────────────────────────────────────────
   useEffect(() => {
     requestLocationPermission().catch(console.warn);
     requestNotificationPermission().catch(console.warn);
   }, []);
 
-  // ── Native log poll (15s) ────────────────────────────────────────────────
+  // ── Native log poll (15 s) ───────────────────────────────────────────────
   useEffect(() => {
     if (!isNativeServiceAvailable()) return;
     const poll = async () => {
@@ -124,7 +115,7 @@ export function useAutomation() {
     return () => { clearTimeout(t); clearInterval(iv); };
   }, []);
 
-  // ── GPS watch (web/simulation fallback) ─────────────────────────────────
+  // ── GPS watch (web/simulation fallback) ──────────────────────────────────
   const getCurrentTime = useCallback(() => {
     const now = new Date();
     return simulation.enabled && simulation.timeOffset !== 0
@@ -171,24 +162,25 @@ export function useAutomation() {
     const nonAbsent = todayLogs.filter(l => l.status !== 'absent');
     if (nonAbsent.length > 0 && nonAbsent[nonAbsent.length - 1].checkOut) return 'checked-out';
 
-    // 'tracking' = GPS watch active, inside check-in window for at least one profile,
-    // but no check-in yet (waiting for geofence entry)
+    // 'tracking' = inside active scan window (GPS should be on) but not yet checked in
+    // Scan window: [checkInTime - markAbsentAfter - 30]  to  [checkOutTime + 30]
     const inWindow = profiles.some(p => {
       if (!p.active) return false;
       if (p.workingDays.length > 0 && !p.workingDays.includes(nowDay)) return false;
-      const ciMins = timeToMinutes(p.checkInTime);
-      return nowMins >= ciMins - 15 && nowMins <= ciMins + p.markAbsentAfter;
+      const scanStart = timeToMinutes(p.checkInTime) - p.markAbsentAfter - 30;
+      const scanEnd   = timeToMinutes(p.checkOutTime) + 30;
+      return nowMins >= scanStart && nowMins <= scanEnd;
     });
     if (inWindow && (currentPosition !== null || simulation.enabled)) return 'tracking';
 
     return 'idle';
   }, [getCurrentTime, profiles, currentPosition, simulation.enabled]);
 
-  // ── Core automation tick (web/browser only — disabled when native service runs) ──
+  // ── Core automation tick (web/browser only) ──────────────────────────────
   useEffect(() => {
     if (isNativeServiceAvailable()) return; // Java service owns all tick logic on Android
 
-    // ── Close stale open sessions from previous days ───────────────────────
+    // Close stale open sessions from previous days
     const closeStale = () => {
       const now = getCurrentTime();
       const todayStr = dateToStr(now);
@@ -210,7 +202,7 @@ export function useAutomation() {
     };
     closeStale();
 
-    // ── Mark previous day(s) absent ────────────────────────────────────────
+    // Mark previous day(s) absent
     const markPrevAbsent = () => {
       const now = getCurrentTime();
       const yesterday = new Date(now);
@@ -235,17 +227,16 @@ export function useAutomation() {
     };
     markPrevAbsent();
 
-    // ── Tick ───────────────────────────────────────────────────────────────
+    // ── Tick ──────────────────────────────────────────────────────────────
     const tick = () => {
-      const now        = getCurrentTime();
-      const coords     = getCurrentCoords();
+      const now     = getCurrentTime();
+      const coords  = getCurrentCoords();
       if (!coords) return;
 
-      const nowStr     = dateToStr(now);
-      const nowMins    = timeToMinutes(timeToStr(now));
-      const nowDay     = now.getDay();
+      const nowStr  = dateToStr(now);
+      const nowMins = timeToMinutes(timeToStr(now));
+      const nowDay  = now.getDay();
 
-      // Load dedup for today (lazy, once per day)
       if (dedupRef.current.size === 0) {
         dedupRef.current = loadDedup(nowStr);
       }
@@ -256,23 +247,28 @@ export function useAutomation() {
       for (const profile of profiles.filter(p => p.active)) {
         if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
 
-        const dist      = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
-        const inFence   = dist <= profile.radius;
-        const ciMins    = timeToMinutes(profile.checkInTime);
-        const coMins    = timeToMinutes(profile.checkOutTime);
+        const dist    = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
+        const inFence = dist <= profile.radius;
+        const ciMins  = timeToMinutes(profile.checkInTime);
+        const coMins  = timeToMinutes(profile.checkOutTime);
         const markAfter = profile.markAbsentAfter;
         const expMins   = profile.expectedHoursPerDay * 60;
 
-        const hasOpen   = updatedLogs.some(l =>
+        // Active check-in window: [checkInTime - markAbsentAfter] to [checkOutTime]
+        const windowStart = ciMins - markAfter;
+        const windowEnd   = coMins;
+        const inCheckInWindow = nowMins >= windowStart && nowMins <= windowEnd;
+
+        const hasOpen = updatedLogs.some(l =>
           l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
         const sessionCount = updatedLogs.filter(l =>
           l.profileId === profile.id && l.date === nowStr && l.status !== 'absent').length;
 
-        // ── AUTO CHECK-IN: geofence entry (Option A — no time window gate) ──
-        if (!hasOpen && inFence) {
+        // ── AUTO CHECK-IN: geofence entry within window ─────────────────
+        // No time-gate — geofence alone determines presence.
+        if (!hasOpen && inFence && inCheckInWindow) {
           const absentMarked = updatedLogs.some(
             l => l.profileId === profile.id && l.date === nowStr && l.status === 'absent');
-          // First check-in key, or re-entry key keyed on session count (not time)
           const ciKey = sessionCount === 0
             ? `checkin:${profile.id}:${nowStr}`
             : `reentry:${profile.id}:${nowStr}:${sessionCount}`;
@@ -291,11 +287,10 @@ export function useAutomation() {
           }
         }
 
-        // Re-evaluate after possible check-in
         const openLog = updatedLogs.find(
           l => l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
 
-        // ── AUTO CHECK-OUT: scheduled checkout time ────────────────────────
+        // ── AUTO CHECK-OUT: scheduled checkout time ──────────────────────
         if (openLog && Math.abs(nowMins - coMins) <= 1) {
           const outKey = `out:${profile.id}:${nowStr}`;
           if (!dedupRef.current.has(outKey)) {
@@ -310,16 +305,13 @@ export function useAutomation() {
           }
         }
 
-        // ── AUTO CHECK-OUT: geofence exit (Option A) ──────────────────────
-        // Require 2 consecutive out-of-fence ticks (handled via exitPending key)
-        // to avoid GPS jitter triggering premature checkout.
+        // ── AUTO CHECK-OUT: geofence exit (2 consecutive out-of-fence ticks) ──
         if (openLog && !inFence) {
           const pendingKey = `exitpending:${openLog.id}`;
           const exitKey    = `exit:${openLog.id}`;
           const sessionMins = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
-          if (sessionMins >= 15 && !dedupRef.current.has(exitKey)) {
+          if (sessionMins >= 5 && !dedupRef.current.has(exitKey)) {
             if (dedupRef.current.has(pendingKey)) {
-              // Second consecutive out-of-fence tick — fire checkout
               const duration = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
               updatedLogs = updatedLogs.map(l => l.id === openLog.id
                 ? { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5, status: 'auto' as const }
@@ -330,18 +322,15 @@ export function useAutomation() {
               changed = true;
               notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
             } else {
-              // First out-of-fence tick — set pending, wait for next tick to confirm
               dedupRef.current.add(pendingKey);
               saveDedup(dedupRef.current, nowStr);
             }
           }
         } else if (openLog && inFence) {
-          // Back inside — clear any pending exit
           dedupRef.current.delete(`exitpending:${openLog.id}`);
         }
 
-        // ── MARK ABSENT: no entry after checkInTime + markAbsentAfter ─────
-        // Only if not currently inside geofence (if inside, they're just late)
+        // ── MARK ABSENT ──────────────────────────────────────────────────
         if (!openLog && !inFence && nowMins > ciMins + markAfter) {
           const absentKey = `absent:${profile.id}:${nowStr}`;
           const hasAnyLog = updatedLogs.some(l => l.profileId === profile.id && l.date === nowStr);
@@ -364,66 +353,55 @@ export function useAutomation() {
       if (changed) { setLogs(updatedLogs); logsRef.current = updatedLogs; saveLogs(updatedLogs); }
     };
 
-    // ── Smart scheduler (mirrors Java scheduleNext) ────────────────────────
+    // ── Smart scheduler (mirrors Java scheduleNext) ───────────────────────
     let schedulerTimer: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleNext = () => {
       if (schedulerTimer) clearTimeout(schedulerTimer);
-      const now      = getCurrentTime();
-      const nowMins  = timeToMinutes(timeToStr(now));
-      const nowStr   = dateToStr(now);
-      const nowDay   = now.getDay();
+      const now     = getCurrentTime();
+      const nowMins = timeToMinutes(timeToStr(now));
+      const nowStr  = dateToStr(now);
+      const nowDay  = now.getDay();
 
+      let inScanWindow = false;
       let hasOpen      = false;
-      let checkEveryMs = 30_000;
-      let inWindow     = false;
       let msToNext     = Infinity;
 
       for (const profile of profiles.filter(p => p.active)) {
         if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
-        const ciMins  = timeToMinutes(profile.checkInTime);
-        const coMins  = timeToMinutes(profile.checkOutTime);
-        const markAfter = profile.markAbsentAfter;
-        const freq    = Math.max(1, profile.checkEvery ?? 5);
+
+        const ciMins      = timeToMinutes(profile.checkInTime);
+        const coMins      = timeToMinutes(profile.checkOutTime);
+        const markAfter   = profile.markAbsentAfter;
+        const scanStart   = ciMins - markAfter - 30;
+        const scanEnd     = coMins + 30;
 
         if (logsRef.current.some(l =>
           l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent')) {
           hasOpen = true;
-          checkEveryMs = Math.min(checkEveryMs, freq * 60_000);
+          inScanWindow = true;
         }
 
-        const ciWindowStart = ciMins - 15;
-        const ciWindowEnd   = ciMins + markAfter;
-        const coWindowStart = coMins - 15;
-        const coWindowEnd   = coMins + 15;
-
-        if ((nowMins >= ciWindowStart && nowMins <= ciWindowEnd) ||
-            (nowMins >= coWindowStart && nowMins <= coWindowEnd)) {
-          inWindow = true;
-        }
-
-        for (const ws of [ciWindowStart, coWindowStart]) {
-          const minsUntil = ws - nowMins;
-          if (minsUntil > 0) msToNext = Math.min(msToNext, minsUntil * 60_000);
+        if (nowMins >= scanStart && nowMins <= scanEnd) {
+          inScanWindow = true;
+        } else if (nowMins < scanStart) {
+          const ms = (scanStart - nowMins) * 60_000;
+          if (ms < msToNext) msToNext = ms;
         }
       }
 
-      if (hasOpen) {
-        tick();
-        schedulerTimer = setTimeout(scheduleNext, Math.max(30_000, checkEveryMs));
-      } else if (inWindow) {
+      if (inScanWindow || hasOpen) {
         tick();
         schedulerTimer = setTimeout(scheduleNext, 30_000);
       } else {
-        // Sleep until 15 min before next window
+        // Sleep until 1 min before next scan window
         const sleepMs = msToNext === Infinity
           ? 60 * 60_000
-          : Math.max(60_000, msToNext - 15 * 60_000);
+          : Math.max(60_000, msToNext - 60_000);
         schedulerTimer = setTimeout(scheduleNext, sleepMs);
       }
     };
 
-    // Initial catch-up tick then start scheduler
     tick();
     scheduleNext();
     return () => { if (schedulerTimer) clearTimeout(schedulerTimer); };
@@ -455,42 +433,6 @@ export function useAutomation() {
     setProfiles(updated); saveProfiles(updated); syncProfilesToNative(updated);
   }, [profiles]);
 
-  // ── Manual overrides ─────────────────────────────────────────────────────
-  const manualCheckIn = useCallback((profileId: string) => {
-    const profile = profiles.find(p => p.id === profileId);
-    if (!profile) return;
-    const now = getCurrentTime();
-    const todayStr = dateToStr(now);
-    const alreadyOpen = logsRef.current.some(
-      l => l.profileId === profileId && l.checkOut === null && l.date === todayStr && l.status !== 'absent');
-    if (alreadyOpen) return;
-    const newLog: AttendanceLog = {
-      id: generateId(), profileId, profileName: profile.name, date: todayStr,
-      checkIn: now.toISOString(), checkOut: null, duration: null,
-      status: 'manual', profileColor: profile.color, attended: true,
-    };
-    // Remove any absent record for this profile+date before inserting manual check-in (Bug 9)
-    const withoutAbsent = logsRef.current.filter(
-      l => !(l.profileId === profileId && l.date === todayStr && l.status === 'absent'));
-    const updated = [...withoutAbsent, newLog];
-    setLogs(updated); logsRef.current = updated; saveLogs(updated);
-  }, [profiles, getCurrentTime]);
-
-  const manualCheckOut = useCallback((profileId?: string) => {
-    const now = getCurrentTime();
-    const todayStr = dateToStr(now);
-    const updated = logsRef.current.map(l => {
-      // Only close today's open sessions (fixes Bug 7 — stale cross-day close)
-      if (l.checkOut !== null || l.date !== todayStr || l.status === 'absent') return l;
-      if (profileId && l.profileId !== profileId) return l;
-      const duration = safeDuration(now.getTime() - new Date(l.checkIn).getTime());
-      const profile  = profiles.find(p => p.id === l.profileId);
-      const expMins  = (profile?.expectedHoursPerDay ?? 8) * 60;
-      return { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5 };
-    });
-    setLogs(updated); logsRef.current = updated; saveLogs(updated);
-  }, [profiles, getCurrentTime]);
-
   // ── Simulation ───────────────────────────────────────────────────────────
   const updateSimulation = useCallback((sim: Partial<SimulationState>) => {
     const updated = { ...simulation, ...sim };
@@ -507,7 +449,6 @@ export function useAutomation() {
       .filter(l => new Date(l.checkIn) >= startOfWeek && l.status !== 'absent')
       .reduce((sum, l) => {
         if (l.duration !== null) return sum + l.duration;
-        // Open session — accumulate elapsed time live
         if (l.checkOut === null) return sum + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
         return sum;
       }, 0);
@@ -522,7 +463,6 @@ export function useAutomation() {
       .filter(l => l.status !== 'absent')
       .reduce((s, l) => {
         if (l.duration !== null) return s + l.duration;
-        // Open session — accumulate elapsed time live
         if (l.checkOut === null) return s + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
         return s;
       }, 0);
@@ -538,7 +478,7 @@ export function useAutomation() {
     getCurrentTime, getCurrentCoords,
     getTrackingStatus, getOpenSessions,
     addProfile, updateProfile, deleteProfile, toggleProfile,
-    manualCheckIn, manualCheckOut, updateSimulation,
+    updateSimulation,
     getWeeklyHours, getTodayStatus, clearLogs,
   };
 }

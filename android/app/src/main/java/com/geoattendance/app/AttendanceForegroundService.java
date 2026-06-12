@@ -37,50 +37,53 @@ import java.util.UUID;
  *
  * Runs as an Android ForegroundService (exempt from Doze/battery optimisation).
  * Handles all GPS polling, geofence evaluation, session logic, and notifications.
- * The React/Capacitor UI layer reads state from SharedPreferences ("AttendanceState")
- * and logs from ("AttendanceLogs") via AttendancePlugin.
  *
- * Key design decisions that mirror the TypeScript logic:
- *  - hasOpenSession() explicitly filters out status=="absent" records (fixes B1/B2/B6)
- *  - Absent is only written once per profile per day (absentProcessed flag)
- *  - Geofence exit key is scoped to session id, not date (fixes B7 / re-entry)
- *  - Previous-day open sessions are closed on service start (fixes B8)
- *  - START_STICKY so Android restarts us if killed (fixes B4/B9/B10)
- *  - BootReceiver restarts us after reboot
+ * Attendance rules:
+ *  - Present/Absent is determined ONLY by geofence (inside radius = present).
+ *  - Check-in fires any time the user enters the geofence within the active window.
+ *  - Active window: [checkInTime - markAbsentAfter] to [checkOutTime + 30 min].
+ *  - GPS starts 30 min before the earliest check-in window and stops 30 min after
+ *    all sessions end (geofence left) or checkOutTime passes — whichever is later.
+ *  - Absent is marked if the user never entered the geofence by checkInTime + markAbsentAfter.
+ *  - No manual check-in or check-out.
  */
 public class AttendanceForegroundService extends Service {
 
     private static final String TAG = "AttendSvc";
 
-    // ── Notification channel ─────────────────────────────────────────────────
+    // ── Notification channels ─────────────────────────────────────────────────
     public static final String CHANNEL_ID    = "attendance_tracking";
     public static final String CHANNEL_NOTIF = "attendance_events";
-    public static final int    NOTIF_ID      = 1001;  // persistent foreground notif
-    private int eventNotifId = 2000;                  // incrementing event notifs
+    public static final int    NOTIF_ID      = 1001;
+    private int eventNotifId = 2000;
 
-    // ── Intent extras ────────────────────────────────────────────────────────
-    /** Set to true by BootReceiver so we know it's a cold-boot start */
+    // ── Intent extras ─────────────────────────────────────────────────────────
     public static final String EXTRA_IS_BOOT = "is_boot_start";
 
-    // ── SharedPreferences keys ───────────────────────────────────────────────
-    /** Bridge to React UI — current tracking snapshot */
+    // ── SharedPreferences keys ────────────────────────────────────────────────
     public static final String PREFS_STATE = "AttendanceState";
-    /** Attendance log records (JSON array) */
     public static final String PREFS_LOGS  = "AttendanceLogs";
-    /** Per-day processed markers (dedup keys) */
     public static final String PREFS_PROC  = "AttendanceProcessed";
 
-    // ── GPS ──────────────────────────────────────────────────────────────────
-    private LocationManager locationManager;
-    private LocationListener locationListener;   // kept as field so stopGPS() can removeUpdates()
-    private Location lastLocation;
-    private static final long   GPS_MIN_TIME_MS   = 30_000;  // 30 s
-    private static final float  GPS_MIN_DISTANCE_M = 10f;    // 10 m
+    // ── GPS ───────────────────────────────────────────────────────────────────
+    private LocationManager  locationManager;
+    private LocationListener locationListener;
+    private Location         lastLocation;
+    private boolean          gpsActive = false;
 
-    // ── Periodic tick ────────────────────────────────────────────────────────
-    private final Handler handler = new Handler(Looper.getMainLooper());
-    private Runnable tickRunnable;
-    private static final long TICK_INTERVAL_MS = 30_000; // 30 s
+    // GPS update params while actively scanning
+    private static final long  GPS_MIN_TIME_MS    = 30_000; // 30 s between updates
+    private static final float GPS_MIN_DISTANCE_M = 10f;    // 10 m minimum movement
+
+    // ── Scheduler ─────────────────────────────────────────────────────────────
+    private final Handler  handler      = new Handler(Looper.getMainLooper());
+    private       Runnable tickRunnable = null;
+
+    // ── Geofence-exit lingering ───────────────────────────────────────────────
+    // Track when each open session last left the fence, so we can keep GPS on
+    // for 30 min after exit before powering down.
+    // Key: profileId, Value: epoch ms when exit was first detected
+    private final java.util.HashMap<String, Long> exitDetectedAt = new java.util.HashMap<>();
 
     // ── IST timezone ─────────────────────────────────────────────────────────
     private static final TimeZone IST = TimeZone.getTimeZone("Asia/Kolkata");
@@ -99,109 +102,78 @@ public class AttendanceForegroundService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         boolean isBootStart = intent != null && intent.getBooleanExtra(EXTRA_IS_BOOT, false);
-        Log.i(TAG, "onStartCommand action=" + (intent != null ? intent.getAction() : "null")
-                + " isBootStart=" + isBootStart);
+        Log.i(TAG, "onStartCommand isBootStart=" + isBootStart);
 
-        startForeground(NOTIF_ID, buildPersistentNotification("GeoAttend active — tracking location"));
+        startForeground(NOTIF_ID, buildPersistentNotification("GeoAttend active — monitoring schedule"));
 
-        // Close any previous-day open sessions on service start
+        // Close any previous-day open sessions
         closeStaleSessions();
 
-        // Start GPS
-        startGPS();
-
-        // Start periodic logic ticks
-        startTicks();
+        // Start the smart scheduler — it will decide when to start/stop GPS
+        scheduleNext(true);
 
         if (isBootStart) {
-            // After a cold reboot, GPS hardware needs time to acquire satellites
-            // (typically 30–90 seconds). We check whether profiles are present in
-            // SharedPreferences — they survive reboot since SharedPreferences is
-            // written to the device's internal storage. If they're missing (e.g.
-            // first install, data cleared), we send a notification asking the user
-            // to open the app so syncProfiles() can run.
             JSONArray profiles = getProfiles();
             if (profiles.length() == 0) {
-                Log.w(TAG, "Boot start: no profiles found in SharedPreferences — user must open app");
-                sendEventNotification(
-                        "⚠️ GeoAttend — action required",
-                        "Open the app to restore attendance tracking after reboot"
-                );
-                // Still schedule ticks — they'll do nothing until profiles arrive via syncProfiles()
-            } else {
-                Log.i(TAG, "Boot start: " + profiles.length() + " profile(s) found, scheduling delayed catch-up scan");
+                sendEventNotification("⚠️ GeoAttend — action required",
+                        "Open the app to restore attendance tracking after reboot");
             }
-            // Delay catch-up scan by 90s on boot — gives GPS time for a cold fix.
-            // Normal app-launch starts use 2s (GPS already warm from system usage).
+            // Delay first catch-up scan by 90 s on boot (GPS cold-fix time)
             handler.postDelayed(this::runCatchUpScan, 90_000);
         } else {
-            // Normal start (user opened app or START_STICKY restart): GPS is already
-            // warm, so a 2s delay is enough for the first fix to arrive.
             handler.postDelayed(this::runCatchUpScan, 2_000);
         }
 
-        return START_STICKY; // restart if killed by system
+        return START_STICKY;
     }
 
     @Override
     public void onDestroy() {
-        Log.i(TAG, "Service destroyed — stopping GPS and ticks");
+        Log.i(TAG, "Service destroyed");
         stopGPS();
         if (tickRunnable != null) handler.removeCallbacks(tickRunnable);
         super.onDestroy();
     }
 
-    @Nullable
-    @Override
-    public IBinder onBind(Intent intent) {
-        return null; // not a bound service
-    }
+    @Nullable @Override
+    public IBinder onBind(Intent intent) { return null; }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // GPS
+    // GPS — smart start / stop
     // ─────────────────────────────────────────────────────────────────────────
 
     private void startGPS() {
-        // Guard against double-registration on START_STICKY restarts.
-        // removeUpdates is a no-op if listener was never registered.
-        if (locationListener != null && locationManager != null) {
-            locationManager.removeUpdates(locationListener);
-            Log.d(TAG, "GPS: removed stale listener before re-registering");
-        }
-
+        if (gpsActive) return; // already running
         try {
             locationManager = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
 
-            // Assign to field so stopGPS() can call removeUpdates() correctly.
             locationListener = new LocationListener() {
                 @Override
                 public void onLocationChanged(@NonNull Location location) {
                     lastLocation = location;
-                    Log.d(TAG, String.format("GPS update: %.5f,%.5f acc=%.0fm",
+                    Log.d(TAG, String.format("GPS: %.5f,%.5f acc=%.0fm",
                             location.getLatitude(), location.getLongitude(), location.getAccuracy()));
                     runTick(false);
                 }
-                // Required for API < 29
                 @Override public void onProviderEnabled(@NonNull String p) {}
                 @Override public void onProviderDisabled(@NonNull String p) {
                     Log.w(TAG, "GPS provider disabled: " + p);
                 }
             };
 
-            //noinspection MissingPermission — permissions are declared in manifest
+            //noinspection MissingPermission
             locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
                     GPS_MIN_TIME_MS,
                     GPS_MIN_DISTANCE_M,
                     locationListener,
-                    Looper.getMainLooper()
-            );
+                    Looper.getMainLooper());
 
-            // Seed with last known location so first tick isn't blind
             //noinspection MissingPermission
             Location last = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (last != null) lastLocation = last;
 
+            gpsActive = true;
             Log.i(TAG, "GPS started");
         } catch (Exception e) {
             Log.e(TAG, "Failed to start GPS: " + e.getMessage());
@@ -209,27 +181,111 @@ public class AttendanceForegroundService extends Service {
     }
 
     private void stopGPS() {
+        if (!gpsActive) return;
         if (locationManager != null && locationListener != null) {
             locationManager.removeUpdates(locationListener);
-            Log.i(TAG, "GPS stopped — listener unregistered");
-        } else {
-            Log.i(TAG, "GPS stopGPS called but nothing to remove");
         }
         locationListener = null;
+        gpsActive = false;
+        Log.i(TAG, "GPS stopped (outside active window)");
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Tick scheduler
+    // Smart scheduler
+    //
+    // Logic:
+    //   scanStart = checkInTime - markAbsentAfter - 30 min
+    //   scanEnd   = checkOutTime + 30 min   (or 30 min after last geofence exit,
+    //               whichever is later)
+    //
+    // Between scanStart and scanEnd  → GPS on, tick every 30 s
+    // Outside that window            → GPS off, sleep until next scanStart
     // ─────────────────────────────────────────────────────────────────────────
 
-    private void startTicks() {
+    private void scheduleNext(boolean immediate) {
+        if (tickRunnable != null) handler.removeCallbacks(tickRunnable);
+
         tickRunnable = new Runnable() {
             @Override public void run() {
-                runTick(false);
-                handler.postDelayed(this, TICK_INTERVAL_MS);
+                Calendar now     = Calendar.getInstance(IST);
+                int nowMins      = toMinutes(formatTime(now));
+                int nowDay       = now.get(Calendar.DAY_OF_WEEK) - 1;
+                String nowDate   = formatDate(now);
+                JSONArray profs  = getProfiles();
+                JSONArray logs   = getLogs();
+
+                boolean anyActive    = false; // any open session right now
+                boolean inScanWindow = false; // inside at least one scan window
+                long    msToNextScan = Long.MAX_VALUE; // ms until next scan window opens
+
+                for (int i = 0; i < profs.length(); i++) {
+                    try {
+                        JSONObject p = profs.getJSONObject(i);
+                        if (!p.optBoolean("active", false)) continue;
+                        JSONArray wd = p.optJSONArray("workingDays");
+                        if (wd != null && wd.length() > 0 && !arrayContains(wd, nowDay)) continue;
+
+                        String profileId    = p.getString("id");
+                        int ciMins          = toMinutes(p.getString("checkInTime"));
+                        int coMins          = toMinutes(p.getString("checkOutTime"));
+                        int markAbsentAfter = p.optInt("markAbsentAfter", 30);
+
+                        // scanStart = 30 min before the earliest point the user could arrive
+                        //           = checkInTime - markAbsentAfter - 30
+                        int scanStartMins = ciMins - markAbsentAfter - 30;
+                        // scanEnd baseline = checkOutTime + 30
+                        int scanEndMins   = coMins + 30;
+
+                        // Extend scanEnd if we detected a geofence exit recently
+                        // (keep GPS on for 30 min after leaving fence)
+                        if (exitDetectedAt.containsKey(profileId)) {
+                            long exitMs    = exitDetectedAt.get(profileId);
+                            long lingerEnd = exitMs + 30L * 60_000;
+                            long lingerMins = (lingerEnd - now.getTimeInMillis()) / 60_000;
+                            if (lingerMins > 0) {
+                                int lingerEndMins = nowMins + (int) lingerMins;
+                                if (lingerEndMins > scanEndMins) scanEndMins = lingerEndMins;
+                            } else {
+                                exitDetectedAt.remove(profileId); // linger expired
+                            }
+                        }
+
+                        // Check for open session → always stay active
+                        if (hasOpenSession(logs, profileId, nowDate)) {
+                            anyActive = true;
+                            inScanWindow = true;
+                        }
+
+                        if (nowMins >= scanStartMins && nowMins <= scanEndMins) {
+                            inScanWindow = true;
+                        } else if (nowMins < scanStartMins) {
+                            long ms = (long)(scanStartMins - nowMins) * 60_000;
+                            if (ms < msToNextScan) msToNextScan = ms;
+                        }
+
+                    } catch (JSONException e) {
+                        Log.e(TAG, "scheduleNext profile error: " + e.getMessage());
+                    }
+                }
+
+                if (inScanWindow || anyActive) {
+                    startGPS();
+                    runTick(false);
+                    // Re-schedule in 30 s
+                    handler.postDelayed(this, 30_000);
+                } else {
+                    stopGPS();
+                    // Sleep until 1 min before next scan window (min 1 min, max 60 min)
+                    long sleepMs = (msToNextScan == Long.MAX_VALUE)
+                            ? 60L * 60_000
+                            : Math.max(60_000, msToNextScan - 60_000);
+                    Log.i(TAG, "Outside scan window — sleeping " + (sleepMs / 60_000) + " min");
+                    handler.postDelayed(this, sleepMs);
+                }
             }
         };
-        handler.postDelayed(tickRunnable, TICK_INTERVAL_MS);
+
+        handler.postDelayed(tickRunnable, immediate ? 0 : 30_000);
     }
 
     private void runCatchUpScan() {
@@ -238,7 +294,15 @@ public class AttendanceForegroundService extends Service {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Core tick — mirrors useAutomation.ts tick()
+    // Core tick
+    //
+    // Attendance rules:
+    //  1. CHECK-IN  : user enters geofence at any time while inside active window.
+    //                 Window = [checkInTime - markAbsentAfter .. checkOutTime]
+    //                 No time-gate — presence alone triggers check-in.
+    //  2. CHECK-OUT : scheduled (at checkOutTime) OR geofence exit after 5 min.
+    //  3. ABSENT    : currentTime > checkInTime + markAbsentAfter
+    //                 AND user never entered the geofence today.
     // ─────────────────────────────────────────────────────────────────────────
 
     private synchronized void runTick(boolean isCatchUp) {
@@ -247,86 +311,91 @@ public class AttendanceForegroundService extends Service {
             return;
         }
 
-        Calendar now = Calendar.getInstance(IST);
+        Calendar now          = Calendar.getInstance(IST);
         String currentDateStr = formatDate(now);
         String currentTimeStr = formatTime(now);
-        int currentMinutes = toMinutes(currentTimeStr);
-        int currentDay = now.get(Calendar.DAY_OF_WEEK) - 1; // 0=Sun … 6=Sat
+        int    currentMinutes = toMinutes(currentTimeStr);
+        int    currentDay     = now.get(Calendar.DAY_OF_WEEK) - 1;
 
-        JSONArray profiles = getProfiles();
-        JSONArray logs = getLogs();
-        boolean logsChanged = false;
+        JSONArray profiles   = getProfiles();
+        JSONArray logs       = getLogs();
+        boolean  logsChanged = false;
 
         for (int i = 0; i < profiles.length(); i++) {
             try {
                 JSONObject profile = profiles.getJSONObject(i);
                 if (!profile.optBoolean("active", false)) continue;
 
-                // Skip non-working days
                 JSONArray workingDays = profile.optJSONArray("workingDays");
-                if (workingDays != null && workingDays.length() > 0 && !arrayContains(workingDays, currentDay)) continue;
+                if (workingDays != null && workingDays.length() > 0
+                        && !arrayContains(workingDays, currentDay)) continue;
 
-                String profileId   = profile.getString("id");
-                String profileName = profile.getString("name");
-                double lat         = profile.getDouble("latitude");
-                double lon         = profile.getDouble("longitude");
-                double radius      = profile.getDouble("radius");
-                String checkInTime = profile.getString("checkInTime");
-                String checkOutTime= profile.getString("checkOutTime");
-                int markAbsentAfter= profile.optInt("markAbsentAfter", 30);
-                double expectedHrs = profile.optDouble("expectedHoursPerDay", 8.0);
-                String color       = profile.optString("color", "#10b981");
+                String profileId    = profile.getString("id");
+                String profileName  = profile.getString("name");
+                double lat          = profile.getDouble("latitude");
+                double lon          = profile.getDouble("longitude");
+                double radius       = profile.getDouble("radius");
+                String checkInTime  = profile.getString("checkInTime");
+                String checkOutTime = profile.getString("checkOutTime");
+                int markAbsentAfter = profile.optInt("markAbsentAfter", 30);
+                double expectedHrs  = profile.optDouble("expectedHoursPerDay", 8.0);
+                String color        = profile.optString("color", "#10b981");
 
-                double dist = haversine(lastLocation.getLatitude(), lastLocation.getLongitude(), lat, lon);
+                int ciMins = toMinutes(checkInTime);
+                int coMins = toMinutes(checkOutTime);
+
+                double  dist    = haversine(lastLocation.getLatitude(), lastLocation.getLongitude(), lat, lon);
                 boolean isWithin = dist <= radius;
 
-                // Fix B1/B2/B6: absent logs (checkOut==null, status==absent) must NOT count as open sessions
                 boolean hasOpenSession = hasOpenSession(logs, profileId, currentDateStr);
 
-                // ── AUTO CHECK-IN ─────────────────────────────────────────────
+                // ── AUTO CHECK-IN ────────────────────────────────────────────
+                // Fires whenever user is inside geofence within the active window.
+                // Window: checkInTime - markAbsentAfter  →  checkOutTime
+                // No ±1 min gate — geofence presence is the only condition.
                 if (!hasOpenSession && isWithin) {
-                    int checkInMins  = toMinutes(checkInTime);
-                    int windowMins   = isCatchUp ? markAbsentAfter : 1;
-                    boolean inWindow;
-                    if (isCatchUp) {
-                        inWindow = currentMinutes >= checkInMins && currentMinutes <= checkInMins + windowMins;
-                    } else {
-                        inWindow = Math.abs(currentMinutes - checkInMins) <= windowMins;
-                    }
+                    int windowStart = ciMins - markAbsentAfter;
+                    int windowEnd   = coMins;
 
-                    boolean hadRealSessionToday = hadRealSession(logs, profileId, currentDateStr);
+                    boolean inCheckInWindow = (currentMinutes >= windowStart && currentMinutes <= windowEnd);
 
-                    String reEntryKey = "reentry:" + currentTimeStr.substring(0, 5);
-                    boolean alreadyReEntry = isProcessed(profileId, currentDateStr, reEntryKey);
-                    boolean alreadyFirst   = isProcessed(profileId, currentDateStr, checkInTime);
-
-                    boolean shouldCheckIn = hadRealSessionToday
-                            ? !alreadyReEntry
-                            : inWindow && !alreadyFirst;
+                    // For catch-up scan: allow check-in if we're anywhere in today's window
+                    // (handles the case where the app/service was just started mid-morning)
+                    boolean shouldCheckIn = isCatchUp ? inCheckInWindow : inCheckInWindow;
 
                     if (shouldCheckIn) {
-                        JSONObject newLog = buildCheckInLog(profileId, profileName, currentDateStr, now, color);
-                        logs = appendLog(logs, newLog);
-                        logsChanged = true;
-                        markProcessed(profileId, currentDateStr, hadRealSessionToday ? reEntryKey : checkInTime);
-                        sendEventNotification("✅ Checked In – " + profileName,
-                                "Auto check-in at " + currentTimeStr);
-                        Log.i(TAG, "CHECK-IN: " + profileName + " at " + currentTimeStr);
+                        boolean hadRealSessionToday = hadRealSession(logs, profileId, currentDateStr);
+                        String reEntryKey  = "reentry:" + currentTimeStr.substring(0, 5);
+                        boolean alreadyRe  = isProcessed(profileId, currentDateStr, reEntryKey);
+                        boolean alreadyFirst = isProcessed(profileId, currentDateStr, checkInTime);
+
+                        boolean doCheckIn = hadRealSessionToday ? !alreadyRe : !alreadyFirst;
+
+                        if (doCheckIn) {
+                            JSONObject newLog = buildCheckInLog(profileId, profileName, currentDateStr, now, color);
+                            logs = appendLog(logs, newLog);
+                            logsChanged = true;
+                            markProcessed(profileId, currentDateStr, hadRealSessionToday ? reEntryKey : checkInTime);
+                            exitDetectedAt.remove(profileId); // clear any lingering exit timer on re-entry
+                            sendEventNotification("✅ Checked In – " + profileName,
+                                    "Auto check-in at " + currentTimeStr);
+                            Log.i(TAG, "CHECK-IN: " + profileName + " at " + currentTimeStr);
+                        }
                     }
                 }
 
-                // Re-evaluate hasOpenSession after possible check-in above
+                // Re-evaluate after possible check-in
                 hasOpenSession = hasOpenSession(logs, profileId, currentDateStr);
 
-                // ── AUTO CHECK-OUT at scheduled time ──────────────────────────
+                // ── AUTO CHECK-OUT: scheduled checkout time ──────────────────
                 if (hasOpenSession) {
-                    boolean inOutWindow = Math.abs(currentMinutes - toMinutes(checkOutTime)) <= 1;
+                    boolean inOutWindow = Math.abs(currentMinutes - coMins) <= 1;
                     boolean alreadyOut  = isProcessed(profileId, currentDateStr, "out:" + checkOutTime);
-
                     if (inOutWindow && !alreadyOut) {
                         logs = closeOpenSession(logs, profileId, currentDateStr, now, expectedHrs);
                         logsChanged = true;
                         markProcessed(profileId, currentDateStr, "out:" + checkOutTime);
+                        exitDetectedAt.remove(profileId);
                         sendEventNotification("🚪 Checked Out – " + profileName,
                                 "Auto check-out at " + currentTimeStr);
                         Log.i(TAG, "CHECKOUT (scheduled): " + profileName + " at " + currentTimeStr);
@@ -334,11 +403,11 @@ public class AttendanceForegroundService extends Service {
                     }
                 }
 
-                // ── AUTO CHECK-OUT on geofence exit ───────────────────────────
+                // ── AUTO CHECK-OUT: geofence exit ────────────────────────────
                 if (hasOpenSession && !isWithin) {
                     JSONObject openLog = findOpenLog(logs, profileId, currentDateStr);
                     if (openLog != null) {
-                        long checkInEpoch = isoToEpoch(openLog.getString("checkIn"));
+                        long checkInEpoch   = isoToEpoch(openLog.getString("checkIn"));
                         long minutesSinceIn = (now.getTimeInMillis() - checkInEpoch) / 60000;
                         if (minutesSinceIn > 5) {
                             String exitKey = "exit:" + openLog.getString("id");
@@ -346,6 +415,8 @@ public class AttendanceForegroundService extends Service {
                                 logs = closeOpenSession(logs, profileId, currentDateStr, now, expectedHrs);
                                 logsChanged = true;
                                 markProcessed(profileId, currentDateStr, exitKey);
+                                // Record exit time so scheduler keeps GPS on for 30 min
+                                exitDetectedAt.put(profileId, now.getTimeInMillis());
                                 sendEventNotification("📍 Left Geofence – " + profileName,
                                         "Check-out at " + currentTimeStr);
                                 Log.i(TAG, "CHECKOUT (exit): " + profileName + " at " + currentTimeStr);
@@ -354,11 +425,14 @@ public class AttendanceForegroundService extends Service {
                     }
                 }
 
-                // ── MARK ABSENT ───────────────────────────────────────────────
-                // Fix B5: never mark absent if physically within geofence
-                int checkInMins = toMinutes(checkInTime);
-                if (!hasOpenSession && !isWithin
-                        && currentMinutes > checkInMins + markAbsentAfter) {
+                // Clear exit linger if user re-entered the fence
+                if (isWithin && exitDetectedAt.containsKey(profileId)) {
+                    exitDetectedAt.remove(profileId);
+                }
+
+                // ── MARK ABSENT ──────────────────────────────────────────────
+                // Only if: no session today AND outside geofence AND past check-in window
+                if (!hasOpenSession && !isWithin && currentMinutes > ciMins + markAbsentAfter) {
                     boolean existsToday = hasAnyLogToday(logs, profileId, currentDateStr);
                     boolean absentDone  = isProcessed(profileId, currentDateStr, "absent");
                     if (!existsToday && !absentDone) {
@@ -373,25 +447,24 @@ public class AttendanceForegroundService extends Service {
                 }
 
             } catch (JSONException e) {
-                Log.e(TAG, "Tick error for profile " + i + ": " + e.getMessage());
+                Log.e(TAG, "Tick error profile " + i + ": " + e.getMessage());
             }
         }
 
         if (logsChanged) {
             saveLogs(logs);
-            // Update the state snapshot that React reads
             updateStateSnapshot(logs);
         }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Close stale sessions from previous day on service start (fix B8)
+    // Close stale sessions from previous days on service start
     // ─────────────────────────────────────────────────────────────────────────
 
     private void closeStaleSessions() {
-        Calendar now = Calendar.getInstance(IST);
+        Calendar now    = Calendar.getInstance(IST);
         String todayStr = formatDate(now);
-        JSONArray logs = getLogs();
+        JSONArray logs  = getLogs();
         boolean changed = false;
 
         try {
@@ -400,12 +473,11 @@ public class AttendanceForegroundService extends Service {
                 if (!log.isNull("checkOut")) continue;
                 if ("absent".equals(log.optString("status"))) continue;
                 String logDate = log.optString("date", "");
-                if (logDate.equals(todayStr)) continue; // today's open sessions handled by normal tick
+                if (logDate.equals(todayStr)) continue;
 
-                // Previous day open session — close it at checkout time or midnight
                 JSONArray profiles = getProfiles();
-                String profileId = log.getString("profileId");
-                String checkOutTime = "17:00"; // fallback
+                String profileId   = log.getString("profileId");
+                String checkOutTime = "17:00";
                 for (int j = 0; j < profiles.length(); j++) {
                     JSONObject p = profiles.getJSONObject(j);
                     if (profileId.equals(p.getString("id"))) {
@@ -413,33 +485,28 @@ public class AttendanceForegroundService extends Service {
                         break;
                     }
                 }
-                // Set checkout to the profile's checkout time on the log's date
-                String closedAt = logDate + "T" + checkOutTime + ":00+05:30";
-                long checkInMs = isoToEpoch(log.getString("checkIn"));
-                long checkOutMs = isoToEpoch(closedAt);
-                long duration = Math.max(0, (checkOutMs - checkInMs) / 60000);
+                String closedAt   = logDate + "T" + checkOutTime + ":00+05:30";
+                long checkInMs    = isoToEpoch(log.getString("checkIn"));
+                long checkOutMs   = isoToEpoch(closedAt);
+                long duration     = Math.max(0, (checkOutMs - checkInMs) / 60000);
                 log.put("checkOut", closedAt);
                 log.put("duration", duration);
-                log.put("attended", duration >= 240); // ≥4h counts as attended
+                log.put("attended", duration >= 240);
                 logs.put(i, log);
                 changed = true;
-                Log.i(TAG, "Closed stale session for profile " + profileId + " from " + logDate);
+                Log.i(TAG, "Closed stale session for " + profileId + " from " + logDate);
             }
         } catch (JSONException e) {
             Log.e(TAG, "closeStaleSessions error: " + e.getMessage());
         }
 
-        if (changed) {
-            saveLogs(logs);
-            updateStateSnapshot(logs);
-        }
+        if (changed) { saveLogs(logs); updateStateSnapshot(logs); }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Session logic helpers — exact Java equivalents of TypeScript functions
+    // Session helpers
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Fix B1/B2/B6: absent records (status=absent, checkOut=null) are NOT open sessions */
     private boolean hasOpenSession(JSONArray logs, String profileId, String date) {
         try {
             for (int i = 0; i < logs.length(); i++) {
@@ -447,30 +514,26 @@ public class AttendanceForegroundService extends Service {
                 if (profileId.equals(l.optString("profileId"))
                         && date.equals(l.optString("date"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status"))) {
+                        && !"absent".equals(l.optString("status")))
                     return true;
-                }
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
         return false;
     }
 
-    /** True if any non-absent log exists for this profile today */
     private boolean hadRealSession(JSONArray logs, String profileId, String date) {
         try {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && date.equals(l.optString("date"))
-                        && !"absent".equals(l.optString("status"))) {
+                        && !"absent".equals(l.optString("status")))
                     return true;
-                }
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
         return false;
     }
 
-    /** True if any log (absent or real) exists for this profile today */
     private boolean hasAnyLogToday(JSONArray logs, String profileId, String date) {
         try {
             for (int i = 0; i < logs.length(); i++) {
@@ -489,9 +552,8 @@ public class AttendanceForegroundService extends Service {
                 if (profileId.equals(l.optString("profileId"))
                         && date.equals(l.optString("date"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status"))) {
+                        && !"absent".equals(l.optString("status")))
                     return l;
-                }
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
         return null;
@@ -506,17 +568,17 @@ public class AttendanceForegroundService extends Service {
                         && date.equals(l.optString("date"))
                         && l.isNull("checkOut")
                         && !"absent".equals(l.optString("status"))) {
-                    long checkInMs = isoToEpoch(l.getString("checkIn"));
-                    long duration = Math.round((now.getTimeInMillis() - checkInMs) / 60000.0);
-                    long expectedMins = Math.round(expectedHrs * 60);
+                    long checkInMs   = isoToEpoch(l.getString("checkIn"));
+                    long duration    = Math.round((now.getTimeInMillis() - checkInMs) / 60000.0);
+                    long expectedMin = Math.round(expectedHrs * 60);
                     l.put("checkOut", toISO(now));
                     l.put("duration", duration);
-                    l.put("attended", duration >= expectedMins * 0.5);
+                    l.put("attended", duration >= expectedMin * 0.5);
                     logs.put(i, l);
                     break;
                 }
             }
-        } catch (JSONException e) { Log.e(TAG, "closeOpenSession error: " + e.getMessage()); }
+        } catch (JSONException e) { Log.e(TAG, "closeOpenSession: " + e.getMessage()); }
         return logs;
     }
 
@@ -560,7 +622,7 @@ public class AttendanceForegroundService extends Service {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
-    // Processed-key deduplication (mirrors processedRef in TypeScript)
+    // Dedup helpers
     // ─────────────────────────────────────────────────────────────────────────
 
     private boolean isProcessed(String profileId, String date, String key) {
@@ -574,9 +636,9 @@ public class AttendanceForegroundService extends Service {
 
     private void markProcessed(String profileId, String date, String key) {
         SharedPreferences prefs = getSharedPreferences(PREFS_PROC, MODE_PRIVATE);
-        String prefKey = profileId + ":" + date;
+        String prefKey  = profileId + ":" + date;
         String existing = prefs.getString(prefKey, "");
-        String updated = existing.isEmpty() ? key : existing + "," + key;
+        String updated  = existing.isEmpty() ? key : existing + "," + key;
         prefs.edit().putString(prefKey, updated).apply();
     }
 
@@ -585,9 +647,6 @@ public class AttendanceForegroundService extends Service {
     // ─────────────────────────────────────────────────────────────────────────
 
     private JSONArray getProfiles() {
-        // Profiles are written by React/JS to localStorage, which Capacitor bridges
-        // to the WebView's localStorage. We read them via a separate SharedPreferences
-        // key that AttendancePlugin.syncProfiles() keeps updated.
         SharedPreferences prefs = getSharedPreferences(PREFS_STATE, MODE_PRIVATE);
         String raw = prefs.getString("profiles", "[]");
         try { return new JSONArray(raw); } catch (JSONException e) { return new JSONArray(); }
@@ -604,14 +663,12 @@ public class AttendanceForegroundService extends Service {
                 .edit().putString("logs", logs.toString()).apply();
     }
 
-    /** Writes a compact state snapshot that the React UI polls via AttendancePlugin.getState() */
     private void updateStateSnapshot(JSONArray logs) {
-        Calendar now = Calendar.getInstance(IST);
-        String today = formatDate(now);
-        boolean checkedIn = false;
-        int totalMinutes = 0;
+        Calendar now  = Calendar.getInstance(IST);
+        String today  = formatDate(now);
+        boolean checkedIn  = false;
+        int totalMinutes   = 0;
         String todayStatus = "idle";
-
         try {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
@@ -642,16 +699,12 @@ public class AttendanceForegroundService extends Service {
     private void createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager nm = getSystemService(NotificationManager.class);
-
             NotificationChannel tracking = new NotificationChannel(
-                    CHANNEL_ID, "Attendance Tracking",
-                    NotificationManager.IMPORTANCE_LOW);
+                    CHANNEL_ID, "Attendance Tracking", NotificationManager.IMPORTANCE_LOW);
             tracking.setDescription("Persistent notification while tracking is active");
             nm.createNotificationChannel(tracking);
-
             NotificationChannel events = new NotificationChannel(
-                    CHANNEL_NOTIF, "Attendance Events",
-                    NotificationManager.IMPORTANCE_DEFAULT);
+                    CHANNEL_NOTIF, "Attendance Events", NotificationManager.IMPORTANCE_DEFAULT);
             events.setDescription("Check-in, check-out, and absent alerts");
             nm.createNotificationChannel(events);
         }
@@ -662,7 +715,6 @@ public class AttendanceForegroundService extends Service {
         tapIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
         PendingIntent pi = PendingIntent.getActivity(this, 0, tapIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("GeoAttend")
                 .setContentText(text)
@@ -687,13 +739,10 @@ public class AttendanceForegroundService extends Service {
     // Utility
     // ─────────────────────────────────────────────────────────────────────────
 
-    /** Haversine distance in metres — exact port of calculateDistance() from storage.ts */
     private static double haversine(double lat1, double lon1, double lat2, double lon2) {
         final double R = 6_371_000;
-        double phi1 = Math.toRadians(lat1);
-        double phi2 = Math.toRadians(lat2);
-        double dPhi = Math.toRadians(lat2 - lat1);
-        double dLam = Math.toRadians(lon2 - lon1);
+        double phi1 = Math.toRadians(lat1), phi2 = Math.toRadians(lat2);
+        double dPhi = Math.toRadians(lat2 - lat1), dLam = Math.toRadians(lon2 - lon1);
         double a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2)
                 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLam / 2) * Math.sin(dLam / 2);
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
@@ -701,8 +750,8 @@ public class AttendanceForegroundService extends Service {
 
     private static int toMinutes(String hhmm) {
         if (hhmm == null || !hhmm.contains(":")) return 0;
-        String[] parts = hhmm.split(":");
-        return Integer.parseInt(parts[0]) * 60 + Integer.parseInt(parts[1]);
+        String[] p = hhmm.split(":");
+        return Integer.parseInt(p[0]) * 60 + Integer.parseInt(p[1]);
     }
 
     private static String formatDate(Calendar c) {
@@ -715,7 +764,6 @@ public class AttendanceForegroundService extends Service {
                 c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE));
     }
 
-    /** ISO 8601 with IST offset (+05:30) */
     private static String toISO(Calendar c) {
         SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'+05:30'", Locale.US);
         sdf.setTimeZone(IST);
@@ -724,13 +772,11 @@ public class AttendanceForegroundService extends Service {
 
     private static long isoToEpoch(String iso) {
         try {
-            // Handle +05:30 or Z suffix
             SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
             sdf.setTimeZone(IST);
-            String trimmed = iso.replaceAll("(\\+[0-9:]+|Z)$", "");
-            return sdf.parse(trimmed).getTime();
+            return sdf.parse(iso.replaceAll("(\\+[0-9:]+|Z)$", "")).getTime();
         } catch (Exception e) {
-            Log.e(TAG, "isoToEpoch failed for: " + iso);
+            Log.e(TAG, "isoToEpoch failed: " + iso);
             return System.currentTimeMillis();
         }
     }
