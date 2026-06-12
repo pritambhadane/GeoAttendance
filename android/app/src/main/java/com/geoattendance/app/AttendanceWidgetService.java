@@ -104,7 +104,8 @@ public class AttendanceWidgetService extends RemoteViewsService {
                 row.setTextViewText(R.id.item_checkout, "Out: —");
                 row.setTextViewText(R.id.item_duration, "—");
                 row.setTextViewText(R.id.item_status, "Absent");
-                row.setTextColor(R.id.item_status, 0xFFEF4444); // red
+                row.setTextColor(R.id.item_status, 0xFFFF6B6B);
+                row.setInt(R.id.item_accent, "setBackgroundColor", 0xFFFF6B6B);
             } else {
                 row.setTextViewText(R.id.item_checkin, "In: " + formatTime(log.optString("checkIn", null)));
                 row.setTextViewText(R.id.item_checkout,
@@ -114,7 +115,9 @@ public class AttendanceWidgetService extends RemoteViewsService {
                 String statusLabel = "auto".equals(status) ? "Auto" : "Manual";
                 if (!attended) statusLabel = "Incomplete";
                 row.setTextViewText(R.id.item_status, statusLabel);
-                row.setTextColor(R.id.item_status, attended ? 0xFF22C55E : 0xFFF59E0B); // green / amber
+                int accentColor = attended ? 0xFF4ADE80 : 0xFFFBBF24;
+                row.setTextColor(R.id.item_status, accentColor);
+                row.setInt(R.id.item_accent, "setBackgroundColor", accentColor);
             }
 
             return row;
