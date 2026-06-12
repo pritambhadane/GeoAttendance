@@ -4,7 +4,6 @@ import {
   requestLocationPermission,
   requestNotificationPermission,
 } from '../services/capacitor';
-import { AttendanceServicePlugin, isNativeServiceAvailable } from '../services/nativePlugin';
 import { setOnboardingComplete } from '../utils/storage';
 
 interface PermissionOnboardingProps {
@@ -23,18 +22,11 @@ export default function PermissionOnboarding({ onComplete }: PermissionOnboardin
       // Notifications (needed for check-in/out alerts and the foreground service)
       await requestNotificationPermission().catch(() => false);
 
-      // Battery optimisation exemption — required for reliable background
-      // tracking when the screen is locked.
-      if (isNativeServiceAvailable()) {
-        try {
-          const status = await AttendanceServicePlugin.isBatteryExempted();
-          if (!status.exempted) {
-            await AttendanceServicePlugin.requestBatteryExemption();
-          }
-        } catch {
-          /* noop — non-fatal, banner will prompt again later */
-        }
-      }
+      // NOTE: Battery optimisation exemption is intentionally NOT requested here.
+      // requestBatteryExemption() launches a system settings Intent which navigates
+      // away from the app — on many Android devices the WebView is destroyed and
+      // recreated on return, causing a blank screen. The battery banner shown in
+      // App.tsx handles this safely after the app is fully loaded.
     } finally {
       setOnboardingComplete();
       setRequesting(false);
@@ -94,8 +86,8 @@ export default function PermissionOnboarding({ onComplete }: PermissionOnboardin
             <div>
               <h3 className="font-semibold text-heading text-sm">Unrestricted Battery Usage</h3>
               <p className="text-xs text-sub mt-0.5">
-                Prevents Android from stopping the background tracking service to
-                save power.
+                Prevents Android from stopping the background tracking service.
+                You'll be prompted to enable this after setup.
               </p>
             </div>
           </div>
