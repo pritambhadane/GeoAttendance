@@ -46,14 +46,6 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
 
     private static final TimeZone IST = TimeZone.getTimeZone("Asia/Kolkata");
 
-    // The four fixed row IDs declared in widget_attendance.xml.
-    private static final int[] ROW_IDS = {
-            R.id.widget_row_0,
-            R.id.widget_row_1,
-            R.id.widget_row_2,
-            R.id.widget_row_3
-    };
-
     // ── AppWidgetProvider callbacks ──────────────────────────────────────────
 
     @Override
@@ -151,15 +143,11 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         views.setViewVisibility(R.id.widget_rows_container, View.VISIBLE);
         views.setViewVisibility(R.id.widget_empty_view,     View.GONE);
 
-        for (int i = 0; i < ROW_IDS.length; i++) {
-            if (i < logs.size()) {
-                RemoteViews row = buildRow(context, logs.get(i));
-                views.setRemoteViews(ROW_IDS[i], row);
-                views.setViewVisibility(ROW_IDS[i], View.VISIBLE);
-            } else {
-                // Hide unused rows
-                views.setViewVisibility(ROW_IDS[i], View.GONE);
-            }
+        // removeAllViews + addView is the correct API-14+ way to populate
+        // a container with dynamic child RemoteViews (setRemoteViews requires API 31).
+        views.removeAllViews(R.id.widget_rows_container);
+        for (int i = 0; i < Math.min(logs.size(), 4); i++) {
+            views.addView(R.id.widget_rows_container, buildRow(context, logs.get(i)));
         }
     }
 

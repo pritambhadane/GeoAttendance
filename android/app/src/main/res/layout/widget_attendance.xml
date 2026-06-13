@@ -1,11 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!--
-    REBUILT WIDGET LAYOUT — Static RemoteViews only.
-    NO ListView / RemoteViewsService (unreliable on OEM ROMs → stuck "Loading").
-    All log rows are pre-built LinearLayouts with fixed IDs populated directly
-    in AttendanceWidgetProvider.updateWidget(). This guarantees instant render
-    on every Android launcher, including MIUI, OneUI, ColorOS, and stock.
--->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -13,7 +6,7 @@
     android:background="#E6101827"
     android:padding="12dp">
 
-    <!-- ── HEADER: App brand + last location ─────────────────────────── -->
+    <!-- Header: last GPS fix -->
     <LinearLayout
         android:id="@+id/widget_header"
         android:layout_width="match_parent"
@@ -26,7 +19,6 @@
         android:paddingTop="7dp"
         android:paddingBottom="7dp">
 
-        <!-- Location icon (Unicode pin) -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -59,12 +51,11 @@
                 android:layout_marginTop="1dp" />
         </LinearLayout>
 
-        <!-- Accuracy badge -->
         <TextView
             android:id="@+id/widget_location_accuracy"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="—"
+            android:text=""
             android:textColor="#38BDF8"
             android:textSize="11sp"
             android:textStyle="bold"
@@ -75,7 +66,7 @@
             android:paddingBottom="2dp" />
     </LinearLayout>
 
-    <!-- ── Section label ─────────────────────────────────────────────── -->
+    <!-- Section label -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -109,32 +100,19 @@
             android:textSize="9sp" />
     </LinearLayout>
 
-    <!-- ── Log rows container ─────────────────────────────────────────── -->
+    <!--
+        Row container: rows are added dynamically via RemoteViews.addView()
+        after removeAllViews() — compatible with minSdk 14+.
+    -->
     <LinearLayout
         android:id="@+id/widget_rows_container"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:orientation="vertical">
+        android:orientation="vertical"
+        android:visibility="gone" />
 
-        <!-- Row 0 -->
-        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_0" />
-
-        <!-- Row 1 -->
-        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_1"
-            android:layout_marginTop="3dp" />
-
-        <!-- Row 2 -->
-        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_2"
-            android:layout_marginTop="3dp" />
-
-        <!-- Row 3 -->
-        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_3"
-            android:layout_marginTop="3dp" />
-
-    </LinearLayout>
-
-    <!-- ── Empty state (shown by visibility toggle when 0 logs) ────────── -->
+    <!-- Empty state -->
     <TextView
         android:id="@+id/widget_empty_view"
         android:layout_width="match_parent"
