@@ -1,105 +1,149 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Widget root layout.
-    IMPORTANT: The empty view for a RemoteViews ListView MUST be a sibling
-    inside the same FrameLayout (not a LinearLayout sibling), otherwise
-    setEmptyView() is silently ignored and the widget stays on "Loading…".
+    REBUILT WIDGET LAYOUT — Static RemoteViews only.
+    NO ListView / RemoteViewsService (unreliable on OEM ROMs → stuck "Loading").
+    All log rows are pre-built LinearLayouts with fixed IDs populated directly
+    in AttendanceWidgetProvider.updateWidget(). This guarantees instant render
+    on every Android launcher, including MIUI, OneUI, ColorOS, and stock.
 -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:background="#CC0F172A"
-    android:padding="10dp">
+    android:background="#E6101827"
+    android:padding="12dp">
 
-    <!-- ── Header: last location scanned (compact) ───────────────────────── -->
+    <!-- ── HEADER: App brand + last location ─────────────────────────── -->
     <LinearLayout
         android:id="@+id/widget_header"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
         android:gravity="center_vertical"
-        android:background="#3338BDF8"
-        android:padding="6dp">
+        android:background="#2038BDF8"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        android:paddingTop="7dp"
+        android:paddingBottom="7dp">
 
+        <!-- Location icon (Unicode pin) -->
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="📍"
-            android:textSize="13sp" />
+            android:textSize="14sp" />
 
-        <TextView
-            android:id="@+id/widget_location_coords"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="4dp"
-            android:text="—"
-            android:textColor="#F1F5F9"
-            android:textSize="12sp"
-            android:textStyle="bold" />
+            android:orientation="vertical"
+            android:layout_marginStart="6dp">
 
+            <TextView
+                android:id="@+id/widget_location_coords"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="No location yet"
+                android:textColor="#F1F5F9"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/widget_location_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="—"
+                android:textColor="#64748B"
+                android:textSize="10sp"
+                android:layout_marginTop="1dp" />
+        </LinearLayout>
+
+        <!-- Accuracy badge -->
         <TextView
             android:id="@+id/widget_location_accuracy"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="—"
             android:textColor="#38BDF8"
-            android:textSize="10sp"
-            android:layout_marginStart="4dp" />
-
-        <TextView
-            android:id="@+id/widget_location_time"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="—"
-            android:textColor="#94A3B8"
-            android:textSize="10sp"
-            android:layout_marginStart="6dp" />
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:background="#2038BDF8"
+            android:paddingStart="6dp"
+            android:paddingEnd="6dp"
+            android:paddingTop="2dp"
+            android:paddingBottom="2dp" />
     </LinearLayout>
 
-    <TextView
+    <!-- ── Section label ─────────────────────────────────────────────── -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="LAST 4 DAYS"
-        android:textColor="#38BDF8"
-        android:textSize="10sp"
-        android:textStyle="bold"
-        android:letterSpacing="0.1"
-        android:layout_marginTop="8dp"
-        android:layout_marginBottom="4dp" />
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="5dp">
 
-    <!--
-        FrameLayout wrapper is REQUIRED for setEmptyView() to work with
-        RemoteViews. The ListView and its empty view must be siblings inside
-        a FrameLayout — not in a LinearLayout — so the widget framework can
-        toggle their visibility correctly.
-    -->
-    <FrameLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1">
-
-        <ListView
-            android:id="@+id/widget_log_list"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:divider="#22FFFFFF"
-            android:dividerHeight="1px"
-            android:background="#1AFFFFFF" />
+        <View
+            android:layout_width="3dp"
+            android:layout_height="12dp"
+            android:background="#38BDF8"
+            android:layout_marginEnd="6dp" />
 
         <TextView
-            android:id="@+id/widget_empty_view"
-            android:layout_width="match_parent"
+            android:layout_width="0dp"
             android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:text="No attendance logs yet"
-            android:textColor="#64748B"
-            android:textSize="12sp"
-            android:gravity="center"
-            android:padding="16dp"
-            android:visibility="gone" />
+            android:layout_weight="1"
+            android:text="LAST 4 DAYS"
+            android:textColor="#38BDF8"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.12" />
 
-    </FrameLayout>
+        <TextView
+            android:id="@+id/widget_updated_time"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=""
+            android:textColor="#475569"
+            android:textSize="9sp" />
+    </LinearLayout>
+
+    <!-- ── Log rows container ─────────────────────────────────────────── -->
+    <LinearLayout
+        android:id="@+id/widget_rows_container"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <!-- Row 0 -->
+        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_0" />
+
+        <!-- Row 1 -->
+        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_1"
+            android:layout_marginTop="3dp" />
+
+        <!-- Row 2 -->
+        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_2"
+            android:layout_marginTop="3dp" />
+
+        <!-- Row 3 -->
+        <include layout="@layout/widget_row_item" android:id="@+id/widget_row_3"
+            android:layout_marginTop="3dp" />
+
+    </LinearLayout>
+
+    <!-- ── Empty state (shown by visibility toggle when 0 logs) ────────── -->
+    <TextView
+        android:id="@+id/widget_empty_view"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="No attendance logs yet.\nOpen GeoAttendance to get started."
+        android:textColor="#475569"
+        android:textSize="12sp"
+        android:visibility="gone" />
 
 </LinearLayout>

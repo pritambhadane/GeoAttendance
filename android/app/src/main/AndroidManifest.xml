@@ -89,10 +89,8 @@
                 android:resource="@xml/widget_attendance_info" />
         </receiver>
 
-        <service
-            android:name=".AttendanceWidgetService"
-            android:permission="android.permission.BIND_REMOTEVIEWS"
-            android:exported="false" />
+        <!-- AttendanceWidgetService removed: widget now uses static RemoteViews,
+             no RemoteViewsService/Factory needed. -->
 
         <!-- REMOVED: BackgroundGeolocationService — replaced by AttendanceForegroundService -->
         <!--
