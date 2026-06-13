@@ -249,7 +249,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         });
 
         // Return at most 4
-        int limit = Math.min(filtered.size(), ROW_IDS.length);
+        int limit = Math.min(filtered.size(), 4);
         for (int i = 0; i < limit; i++) {
             result.add(filtered.get(i));
         }
