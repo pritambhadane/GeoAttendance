@@ -16,8 +16,8 @@ import java.util.Locale;
 /**
  * Home-screen widget showing:
  *  - Header: last GPS location scanned (lat/lng), timestamp, and accuracy.
- *  - List: last 4 days of attendance logs — profile name, check-in,
- *          check-out, duration, and status.
+ *  - List:   last 4 days of attendance logs — profile name, check-in,
+ *            check-out, duration, and status.
  *
  * Data is read directly from the SharedPreferences written by
  * AttendanceForegroundService, so the widget works even if the app's
@@ -43,7 +43,10 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         for (int id : ids) {
             updateWidget(context, mgr, id);
         }
-        // Notify the RemoteViewsFactory to reload its data
+        // Notify the RemoteViewsFactory to reload its data.
+        // Called once here (not again inside updateWidget) to avoid the
+        // duplicate notifyAppWidgetViewDataChanged that was causing the
+        // factory to reset mid-render on some launchers.
         mgr.notifyAppWidgetViewDataChanged(ids, R.id.widget_log_list);
     }
 
@@ -75,28 +78,38 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         // ── List: last 4 days of logs ───────────────────────────────────────
         Intent listIntent = new Intent(context, AttendanceWidgetService.class);
         listIntent.putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId);
+        // Unique data URI per widget ID — required so Android doesn't reuse
+        // the same RemoteViewsService instance across widget instances.
         listIntent.setData(Uri.parse(listIntent.toUri(Intent.URI_INTENT_SCHEME)));
         views.setRemoteAdapter(R.id.widget_log_list, listIntent);
+
+        // FIX: setEmptyView works correctly now that widget_empty_view is a
+        // FrameLayout sibling of widget_log_list (see widget_attendance.xml).
         views.setEmptyView(R.id.widget_log_list, R.id.widget_empty_view);
 
-        // Tapping the widget opens the app
-        Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        // Tapping the widget opens the app.
+        Intent launchIntent = context.getPackageManager()
+                .getLaunchIntentForPackage(context.getPackageName());
         if (launchIntent != null) {
             android.app.PendingIntent pendingIntent = android.app.PendingIntent.getActivity(
                     context, 0, launchIntent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT |
+                    android.app.PendingIntent.FLAG_IMMUTABLE);
             views.setOnClickPendingIntent(R.id.widget_header, pendingIntent);
         }
 
         appWidgetManager.updateAppWidget(widgetId, views);
-        // Trigger the RemoteViewsFactory to call onDataSetChanged and reload list data
-        appWidgetManager.notifyAppWidgetViewDataChanged(widgetId, R.id.widget_log_list);
+        // NOTE: notifyAppWidgetViewDataChanged is intentionally NOT called here.
+        // It is called once in refreshAll() after all widget IDs are updated,
+        // or by the system's own update cycle for periodic refreshes.
+        // Calling it here AND in refreshAll was causing a double-reset race
+        // on OEM launchers that manifested as the "permanent loading" symptom.
     }
 
     private static String formatRelativeTime(long timestampMs) {
         long diffMs = System.currentTimeMillis() - timestampMs;
         long mins = diffMs / 60000;
-        if (mins < 1) return "Just now";
+        if (mins < 1)  return "Just now";
         if (mins < 60) return mins + "m ago";
         long hours = mins / 60;
         if (hours < 24) return hours + "h ago";

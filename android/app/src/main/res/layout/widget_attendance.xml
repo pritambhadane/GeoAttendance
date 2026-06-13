@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Widget root layout.
+    IMPORTANT: The empty view for a RemoteViews ListView MUST be a sibling
+    inside the same FrameLayout (not a LinearLayout sibling), otherwise
+    setEmptyView() is silently ignored and the widget stays on "Loading…".
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
@@ -63,24 +69,37 @@
         android:layout_marginTop="8dp"
         android:layout_marginBottom="4dp" />
 
-    <!-- ── List: last 4 days of attendance logs ───────────────────────── -->
-    <ListView
-        android:id="@+id/widget_log_list"
+    <!--
+        FrameLayout wrapper is REQUIRED for setEmptyView() to work with
+        RemoteViews. The ListView and its empty view must be siblings inside
+        a FrameLayout — not in a LinearLayout — so the widget framework can
+        toggle their visibility correctly.
+    -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
-        android:divider="#22FFFFFF"
-        android:dividerHeight="1px"
-        android:background="#1AFFFFFF" />
+        android:layout_weight="1">
 
-    <TextView
-        android:id="@+id/widget_empty_view"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="No attendance logs yet"
-        android:textColor="#64748B"
-        android:textSize="12sp"
-        android:gravity="center"
-        android:padding="16dp" />
+        <ListView
+            android:id="@+id/widget_log_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="#22FFFFFF"
+            android:dividerHeight="1px"
+            android:background="#1AFFFFFF" />
+
+        <TextView
+            android:id="@+id/widget_empty_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="No attendance logs yet"
+            android:textColor="#64748B"
+            android:textSize="12sp"
+            android:gravity="center"
+            android:padding="16dp"
+            android:visibility="gone" />
+
+    </FrameLayout>
 
 </LinearLayout>
