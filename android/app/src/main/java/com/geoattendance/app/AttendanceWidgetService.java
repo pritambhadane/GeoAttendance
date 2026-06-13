@@ -39,9 +39,9 @@ public class AttendanceWidgetService extends RemoteViewsService {
 
         @Override
         public void onCreate() {
-            // Load data immediately on creation.
-            // On some Android versions onDataSetChanged is NOT called after onCreate,
-            // so the list would stay stuck on "Loading..." without this.
+            // Must load data here too — on many Android versions (especially MIUI/Xiaomi),
+            // onDataSetChanged is NOT called automatically after onCreate on first bind.
+            // Without this the factory has an empty list and the ListView shows "Loading..."
             onDataSetChanged();
         }
 
@@ -132,7 +132,7 @@ public class AttendanceWidgetService extends RemoteViewsService {
         @Override public RemoteViews getLoadingView() { return null; }
         @Override public int getViewTypeCount() { return 1; }
         @Override public long getItemId(int position) { return position; }
-        @Override public boolean hasStableIds() { return true; }
+        @Override public boolean hasStableIds() { return false; }
 
         private String formatTime(String iso) {
             if (iso == null) return "—";

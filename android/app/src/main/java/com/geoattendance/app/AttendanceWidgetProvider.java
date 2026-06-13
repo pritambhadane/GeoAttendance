@@ -34,23 +34,16 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         }
     }
 
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        super.onReceive(context, intent);
-        if (ACTION_REFRESH.equals(intent.getAction())) {
-            refreshAll(context);
-        }
-    }
-
     /** Call from anywhere (service, plugin) to push fresh data to all widget instances. */
     public static void refreshAll(Context context) {
         AppWidgetManager mgr = AppWidgetManager.getInstance(context);
         ComponentName provider = new ComponentName(context, AttendanceWidgetProvider.class);
         int[] ids = mgr.getAppWidgetIds(provider);
+        if (ids == null || ids.length == 0) return;
         for (int id : ids) {
             updateWidget(context, mgr, id);
         }
-        // Tell the list adapter its data changed too
+        // Notify the RemoteViewsFactory to reload its data
         mgr.notifyAppWidgetViewDataChanged(ids, R.id.widget_log_list);
     }
 
@@ -96,8 +89,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         }
 
         appWidgetManager.updateAppWidget(widgetId, views);
-        // Force the RemoteViewsFactory to reload — without this the ListView
-        // stays stuck on "Loading…" because onDataSetChanged is never invoked.
+        // Trigger the RemoteViewsFactory to call onDataSetChanged and reload list data
         appWidgetManager.notifyAppWidgetViewDataChanged(widgetId, R.id.widget_log_list);
     }
 
