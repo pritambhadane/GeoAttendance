@@ -4,7 +4,6 @@ import {
   Menu, X, Radio, Sun, Moon, BarChart3, Crosshair, Clock,
   BatteryWarning,
 } from 'lucide-react';
-// Note: manualCheckIn and manualCheckOut removed — attendance is geofence-only.
 import { ThemeProvider, useTheme } from './hooks/useTheme';
 import { useAutomation } from './hooks/useAutomation';
 import Dashboard from './components/Dashboard';
@@ -35,20 +34,22 @@ function AppContent() {
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
 
-  if (!onboardingDone) {
-    return <PermissionOnboarding onComplete={() => setOnboardingDone(true)} />;
-  }
+  // ── CRITICAL: ALL hooks must be declared before any conditional return.
+  // The original code placed useEffect hooks after an early `return` when
+  // onboardingDone=false. On first render React never registered those hooks;
+  // when onComplete() set onboardingDone=true React detected a hook count
+  // mismatch and threw, leaving a blank screen. All hooks are now declared
+  // unconditionally; onboardingDone is checked inside each effect.
 
   // ── Start native ForegroundService on app launch ─────────────────────────
   useEffect(() => {
+    if (!onboardingDone) return;
     if (!isNativeServiceAvailable()) return;
 
     const bootstrap = async () => {
       try {
-        // Seed the Java service with existing profiles and logs from localStorage
         await AttendanceServicePlugin.syncProfiles({ profiles: JSON.stringify(getProfiles()) });
         await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(getLogs()) });
-        // Start the ForegroundService — it will keep running even when screen locks
         await AttendanceServicePlugin.startService();
         console.log('[GeoAttend] Native ForegroundService started');
       } catch (e) {
@@ -57,17 +58,11 @@ function AppContent() {
     };
 
     bootstrap();
+  }, [onboardingDone]);
 
-    return () => {
-      // Do NOT stop the service on unmount — it must persist in background.
-    };
-  }, []);
-
-  // ── Battery optimisation exemption check (Bug 2 fix) ─────────────────────
-  // Without being whitelisted, Android kills the ForegroundService within
-  // 20–60 minutes on most phones. We check once on launch and show a banner
-  // if the user needs to grant exemption.
+  // ── Battery optimisation exemption check ─────────────────────────────────
   useEffect(() => {
+    if (!onboardingDone) return;
     if (!isNativeServiceAvailable()) return;
 
     const checkBattery = async () => {
@@ -81,15 +76,20 @@ function AppContent() {
       }
     };
 
-    // Small delay so it doesn't fire before the service finishes starting
     const t = setTimeout(checkBattery, 3000);
     return () => clearTimeout(t);
-  }, []);
+  }, [onboardingDone]);
 
+  // ── Clock tick ───────────────────────────────────────────────────────────
   useEffect(() => {
     const id = setInterval(() => setNowClock(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  // ── Conditional render (after all hooks) ─────────────────────────────────
+  if (!onboardingDone) {
+    return <PermissionOnboarding onComplete={() => setOnboardingDone(true)} />;
+  }
 
   const weeklyMinutes = automation.getWeeklyHours();
   const todayStatus = automation.getTodayStatus();
