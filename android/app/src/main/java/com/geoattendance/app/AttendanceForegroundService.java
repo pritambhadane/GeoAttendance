@@ -649,6 +649,7 @@ public class AttendanceForegroundService extends Service {
     private void saveLogs(JSONArray logs) {
         getSharedPreferences(PREFS_LOGS, MODE_PRIVATE)
                 .edit().putString("logs", logs.toString()).apply();
+        AttendanceWidgetProvider.refreshAll(this);
     }
 
     /**
@@ -662,6 +663,7 @@ public class AttendanceForegroundService extends Service {
                 .putFloat("lastLocAccuracy", location.getAccuracy())
                 .putLong("lastLocTimestamp", System.currentTimeMillis())
                 .apply();
+        AttendanceWidgetProvider.refreshAll(this);
     }
 
     private void updateStateSnapshot(JSONArray logs) {
@@ -691,6 +693,7 @@ public class AttendanceForegroundService extends Service {
                 .putString("todayStatus", todayStatus)
                 .putLong("lastUpdated", System.currentTimeMillis())
                 .apply();
+        AttendanceWidgetProvider.refreshAll(this);
     }
 
     // ─────────────────────────────────────────────────────────────────────────

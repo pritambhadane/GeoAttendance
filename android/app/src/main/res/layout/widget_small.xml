@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="8dp">
+
+    <!-- Background gradient -->
+    <LinearLayout
+        android:id="@+id/widget_small_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@drawable/widget_bg_teal"
+        android:orientation="vertical"
+        android:gravity="center"
+        android:padding="12dp">
+
+        <!-- Status icon + label -->
+        <TextView
+            android:id="@+id/widget_small_icon"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📍"
+            android:textSize="28sp" />
+
+        <TextView
+            android:id="@+id/widget_small_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/widget_pill"
+            android:paddingHorizontal="10dp"
+            android:paddingVertical="3dp"
+            android:text="Present"
+            android:textColor="#FFFFFF"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:maxLines="1" />
+
+        <!-- Hours today -->
+        <TextView
+            android:id="@+id/widget_small_hours"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="0h 0m"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:alpha="0.95" />
+
+        <!-- Streak -->
+        <TextView
+            android:id="@+id/widget_small_streak"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="🔥 0d"
+            android:textColor="#FFFFFFCC"
+            android:textSize="10sp" />
+
+    </LinearLayout>
+</FrameLayout>

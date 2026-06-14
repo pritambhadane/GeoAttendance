@@ -4,4 +4,7 @@
     <string name="title_activity_main">GeoAttendance</string>
     <string name="package_name">com.geoattendance.app</string>
     <string name="custom_url_scheme">com.geoattendance.app</string>
+    <string name="widget_small_description">2×2 attendance status widget</string>
+    <string name="widget_medium_description">4×2 attendance summary widget</string>
+    <string name="widget_large_description">4×4 full attendance dashboard widget</string>
 </resources>
