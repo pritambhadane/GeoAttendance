@@ -238,7 +238,8 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
   } = analytics;
 
   const maxDayMinutes = Math.max(...days.map(d => d.totalMinutes), 1);
-  const barDays       = days.slice(-14);
+  const todayBarStr   = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const barDays       = days.filter(d => d.date <= todayBarStr).slice(-14);
   const isCurrentMonth = viewMonth === now.getMonth() && viewYear === now.getFullYear();
 
   // Insights
