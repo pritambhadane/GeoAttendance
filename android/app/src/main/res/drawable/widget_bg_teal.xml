@@ -1,22 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- Frosted glass base -->
-    <item>
-        <shape android:shape="rectangle">
-            <solid android:color="#28FFFFFF" />
-            <corners android:radius="24dp" />
-        </shape>
-    </item>
-    <!-- Teal gradient overlay -->
-    <item>
-        <shape android:shape="rectangle">
-            <gradient
-                android:angle="135"
-                android:startColor="#B20D9488"
-                android:centerColor="#990F766E"
-                android:endColor="#B2065F46"
-                android:type="linear" />
-            <corners android:radius="24dp" />
-        </shape>
-    </item>
-</layer-list>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <gradient
+        android:angle="135"
+        android:startColor="#CC0D9488"
+        android:centerColor="#CC0F766E"
+        android:endColor="#CC065F46"
+        android:type="linear" />
+    <corners android:radius="20dp" />
+</shape>
