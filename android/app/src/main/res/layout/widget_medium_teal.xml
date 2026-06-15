@@ -51,7 +51,7 @@
     </LinearLayout>
 
     <!-- Divider -->
-    <View
+    <TextView
         android:layout_width="1dp"
         android:layout_height="match_parent"
         android:layout_marginLeft="10dp"
