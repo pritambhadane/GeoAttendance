@@ -22,16 +22,16 @@ import java.util.TimeZone;
 import java.util.TreeSet;
 
 /**
- * Core widget logic. Three size sub-providers delegate here with an explicit
- * size string so we never need to inspect AppWidgetInfo at runtime (which can
- * return null and crash).
+ * Core widget logic. Three size sub-providers delegate here.
  *
- * Key design decisions to avoid "An error occurred when loading widget":
- *  1. NO emoji in any RemoteViews.setTextViewText() call — crashes on many OEMs.
- *  2. NO runtime setBackgroundResource — use separate teal/rainbow layout files
- *     per theme so the background is baked into the XML.
- *  3. setOnClickPendingIntent ONLY on the root view — not on nested children.
- *  4. All SharedPreferences reads are wrapped in try/catch with safe defaults.
+ * Shows:
+ *  - Overall today status: Present / Done / Absent / Idle
+ *  - Per-profile breakdown: "2 present, 1 absent" or "1 active"
+ *  - Today's total hours, first check-in, first check-out
+ *  - Streak of consecutive attended days
+ *  - Last GPS scan time
+ *
+ * Long-press status label toggles teal / rainbow theme.
  */
 public class AttendanceWidgetProvider extends AppWidgetProvider {
 
@@ -44,7 +44,6 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
 
     static final String ACTION_TOGGLE_THEME = "com.geoattendance.app.WIDGET_TOGGLE_THEME";
 
-    // ── AppWidgetProvider entry point (fallback only) ─────────────────────────
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
         for (int id : ids) updateWidget(ctx, mgr, id, "medium");
@@ -62,11 +61,11 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
     // ── Called by sub-providers ───────────────────────────────────────────────
     static void updateWidget(Context ctx, AppWidgetManager mgr, int widgetId, String size) {
         try {
-            WidgetData data  = readData(ctx);
-            boolean rainbow  = THEME_RAINBOW.equals(getTheme(ctx));
+            WidgetData data = readData(ctx);
+            boolean rainbow = THEME_RAINBOW.equals(getTheme(ctx));
             RemoteViews views = buildViews(ctx, size, rainbow, data);
 
-            // Single tap target: root view opens the app
+            // Tap root → open app
             Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
             if (launch != null) {
                 PendingIntent pi = PendingIntent.getActivity(ctx, widgetId, launch,
@@ -74,18 +73,15 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                 views.setOnClickPendingIntent(getRootId(size, rainbow), pi);
             }
 
-            // Long-press root → toggle theme via broadcast
+            // Long-press status label → toggle theme
             Intent toggle = new Intent(ctx, AttendanceWidgetProvider.class);
             toggle.setAction(ACTION_TOGGLE_THEME);
             PendingIntent togglePi = PendingIntent.getBroadcast(ctx, widgetId + 10000, toggle,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-            // We wire toggle to the status text (safe nested view for click)
             views.setOnClickPendingIntent(getStatusId(size), togglePi);
 
             mgr.updateAppWidget(widgetId, views);
-        } catch (Exception e) {
-            // Prevent crash loop — do nothing, widget will retry on next update period
-        }
+        } catch (Exception ignored) {}
     }
 
     // ── Public refresh called from ForegroundService ──────────────────────────
@@ -104,7 +100,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         } catch (Exception ignored) {}
     }
 
-    // ── RemoteViews builder — picks layout by size + theme ───────────────────
+    // ── RemoteViews builder ───────────────────────────────────────────────────
     private static RemoteViews buildViews(Context ctx, String size, boolean rainbow, WidgetData d) {
         String pkg = ctx.getPackageName();
         RemoteViews v;
@@ -128,6 +124,10 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                 v.setTextViewText(R.id.widget_large_checkout, d.checkOut);
                 v.setTextViewText(R.id.widget_large_gps,      d.lastGps);
                 v.setTextViewText(R.id.widget_large_updated,  d.updatedAt);
+                // Profile summary line (e.g. "2 present, 1 absent")
+                if (d.profileSummary != null && !d.profileSummary.isEmpty()) {
+                    v.setTextViewText(R.id.widget_large_streak, d.streak + " day streak  |  " + d.profileSummary);
+                }
                 break;
 
             default: // medium
@@ -149,9 +149,12 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         WidgetData d = new WidgetData();
         try {
             SharedPreferences state = ctx.getSharedPreferences(PREFS_STATE, Context.MODE_PRIVATE);
-            String status = state.getString("todayStatus", "idle");
+            String status       = state.getString("todayStatus", "idle");
+            int profilesPresent = state.getInt("profilesPresent", 0);
+            int profilesAbsent  = state.getInt("profilesAbsent",  0);
+            int profilesActive  = state.getInt("profilesActive",  0);
 
-            // No emoji — plain ASCII tags that are safe in all RemoteViews
+            // Status tag and label — now includes absent
             switch (status) {
                 case "checked-in":
                     d.statusLabel = "Present"; d.statusTag = "[IN]";  break;
@@ -163,6 +166,19 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                     d.statusLabel = "Idle";    d.statusTag = "[  ]";  break;
             }
 
+            // Build profile summary string
+            StringBuilder sb = new StringBuilder();
+            if (profilesActive > 0)  sb.append(profilesActive).append(" active");
+            if (profilesPresent > 0) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(profilesPresent).append(" done");
+            }
+            if (profilesAbsent > 0) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(profilesAbsent).append(" absent");
+            }
+            d.profileSummary = sb.toString();
+
             int totalMins = state.getInt("totalMinutesToday", 0);
             d.hoursToday  = formatDuration(totalMins);
 
@@ -172,26 +188,35 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             long updTs = state.getLong("lastUpdated", 0);
             d.updatedAt = updTs > 0 ? relativeTime(updTs) : "never";
 
-            readLogsData(ctx, d);
+            // Read check-in/out and streak from logs
+            readLogsData(ctx, d, state);
+
         } catch (Exception ignored) {}
         return d;
     }
 
-    private static void readLogsData(Context ctx, WidgetData d) {
+    private static void readLogsData(Context ctx, WidgetData d, SharedPreferences state) {
         try {
-            SharedPreferences logPrefs = ctx.getSharedPreferences(PREFS_LOGS, Context.MODE_PRIVATE);
-            String raw = logPrefs.getString("logs", "[]");
-            JSONArray logs = new JSONArray(raw);
-
-            SimpleDateFormat dateFmt = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
-            dateFmt.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
-            String today = dateFmt.format(new Date());
+            // Use firstCheckIn/firstCheckOut stored by ForegroundService if available
+            String fcIn  = state.getString("firstCheckIn",  "");
+            String fcOut = state.getString("firstCheckOut", "");
 
             SimpleDateFormat timeFmt = new SimpleDateFormat("HH:mm", Locale.getDefault());
             timeFmt.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
             SimpleDateFormat isoFmt = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.getDefault());
 
-            // Streak: consecutive attended days going backwards from today
+            if (!fcIn.isEmpty()) {
+                try { d.checkIn = timeFmt.format(isoFmt.parse(fcIn)); } catch (Exception e) { d.checkIn = "--:--"; }
+            }
+            if (!fcOut.isEmpty()) {
+                try { d.checkOut = timeFmt.format(isoFmt.parse(fcOut)); } catch (Exception e) { d.checkOut = "--:--"; }
+            }
+
+            // Streak from logs
+            SharedPreferences logPrefs = ctx.getSharedPreferences(PREFS_LOGS, Context.MODE_PRIVATE);
+            String raw = logPrefs.getString("logs", "[]");
+            JSONArray logs = new JSONArray(raw);
+
             Set<String> attendedDates = new TreeSet<>(Collections.reverseOrder());
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
@@ -211,24 +236,6 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             }
             d.streak = streak;
 
-            // Today's check-in / check-out
-            for (int i = logs.length() - 1; i >= 0; i--) {
-                JSONObject l = logs.getJSONObject(i);
-                if (!today.equals(l.optString("date", ""))) continue;
-                if ("absent".equals(l.optString("status", ""))) continue;
-
-                String ci = l.optString("checkIn", "");
-                if (!ci.isEmpty()) {
-                    try { d.checkIn = timeFmt.format(isoFmt.parse(ci)); }
-                    catch (Exception e) { d.checkIn = "--:--"; }
-                }
-                String co = l.isNull("checkOut") ? "" : l.optString("checkOut", "");
-                if (!co.isEmpty()) {
-                    try { d.checkOut = timeFmt.format(isoFmt.parse(co)); }
-                    catch (Exception e) { d.checkOut = "--:--"; }
-                }
-                break;
-            }
         } catch (Exception ignored) {}
     }
 
@@ -279,13 +286,14 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
 
     // ── Data holder ───────────────────────────────────────────────────────────
     static class WidgetData {
-        String statusLabel = "Idle";
-        String statusTag   = "[  ]";
-        String hoursToday  = "0h 0m";
-        String checkIn     = "--:--";
-        String checkOut    = "--:--";
-        String lastGps     = "--";
-        String updatedAt   = "never";
-        int    streak      = 0;
+        String statusLabel   = "Idle";
+        String statusTag     = "[  ]";
+        String hoursToday    = "0h 0m";
+        String checkIn       = "--:--";
+        String checkOut      = "--:--";
+        String lastGps       = "--";
+        String updatedAt     = "never";
+        String profileSummary = "";
+        int    streak        = 0;
     }
 }
