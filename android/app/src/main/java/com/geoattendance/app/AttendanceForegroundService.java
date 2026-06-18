@@ -672,25 +672,54 @@ public class AttendanceForegroundService extends Service {
         boolean checkedIn  = false;
         int totalMinutes   = 0;
         String todayStatus = "idle";
+
+        // Per-profile summary for widget: track each profile independently
+        int profilesPresent = 0;
+        int profilesAbsent  = 0;
+        int profilesActive  = 0; // open session right now
+        String firstCheckIn  = "";
+        String firstCheckOut = "";
+
         try {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (!today.equals(l.optString("date"))) continue;
-                if (l.isNull("checkOut") && !"absent".equals(l.optString("status"))) {
+                String status = l.optString("status", "auto");
+
+                if ("absent".equals(status)) {
+                    profilesAbsent++;
+                    continue;
+                }
+
+                // Real session
+                if (l.isNull("checkOut")) {
                     checkedIn = true;
                     todayStatus = "checked-in";
-                }
-                if (!l.isNull("duration") && !"absent".equals(l.optString("status"))) {
-                    totalMinutes += l.optInt("duration", 0);
+                    profilesActive++;
+                    if (firstCheckIn.isEmpty()) firstCheckIn = l.optString("checkIn", "");
+                } else {
+                    if (!l.isNull("duration")) totalMinutes += l.optInt("duration", 0);
+                    profilesPresent++;
+                    if (firstCheckIn.isEmpty())  firstCheckIn  = l.optString("checkIn", "");
+                    if (firstCheckOut.isEmpty()) firstCheckOut = l.optString("checkOut", "");
                 }
             }
             if (!checkedIn && totalMinutes > 0) todayStatus = "checked-out";
+            // If ALL active profiles today are absent and nothing else, mark absent
+            if (!checkedIn && totalMinutes == 0 && profilesAbsent > 0 && profilesPresent == 0) {
+                todayStatus = "absent";
+            }
         } catch (JSONException e) { Log.e(TAG, "updateStateSnapshot: " + e.getMessage()); }
 
         getSharedPreferences(PREFS_STATE, MODE_PRIVATE).edit()
                 .putBoolean("checkedIn", checkedIn)
                 .putInt("totalMinutesToday", totalMinutes)
                 .putString("todayStatus", todayStatus)
+                .putInt("profilesPresent", profilesPresent)
+                .putInt("profilesAbsent",  profilesAbsent)
+                .putInt("profilesActive",  profilesActive)
+                .putString("firstCheckIn",  firstCheckIn)
+                .putString("firstCheckOut", firstCheckOut)
                 .putLong("lastUpdated", System.currentTimeMillis())
                 .apply();
         AttendanceWidgetProvider.refreshAll(this);
@@ -797,3 +826,4 @@ public class AttendanceForegroundService extends Service {
         return false;
     }
 }
+
