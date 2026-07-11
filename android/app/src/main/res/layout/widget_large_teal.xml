@@ -179,6 +179,57 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Last 3 days — all profiles -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/widget_card"
+        android:padding="10dp"
+        android:orientation="vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="LAST 3 DAYS"
+            android:textColor="#FFFFFF88"
+            android:textSize="8sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/widget_large_day1"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:text="--"
+            android:textColor="#FFFFFF"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/widget_large_day2"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:text="--"
+            android:textColor="#FFFFFFDD"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/widget_large_day3"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:text="--"
+            android:textColor="#FFFFFFDD"
+            android:textSize="10sp" />
+    </LinearLayout>
+
     <!-- GPS row -->
     <LinearLayout
         android:layout_width="match_parent"

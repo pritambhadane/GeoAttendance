@@ -109,4 +109,16 @@
             android:textSize="10sp" />
     </LinearLayout>
 
+    <!-- Last 3 days compact history -->
+    <TextView
+        android:id="@+id/widget_medium_history"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:singleLine="true"
+        android:ellipsize="end"
+        android:text="--"
+        android:textColor="#FFFFFFCC"
+        android:textSize="9sp" />
+
 </LinearLayout>

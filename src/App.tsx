@@ -14,6 +14,7 @@ import MonthlySummary from './components/MonthlySummary';
 import PermissionOnboarding from './components/PermissionOnboarding';
 import { AttendanceServicePlugin, isNativeServiceAvailable } from './services/nativePlugin';
 import { getProfiles, getLogs, isOnboardingComplete } from './utils/storage';
+import { App as CapacitorApp } from '@capacitor/app';
 
 type Tab = 'dashboard' | 'profiles' | 'history' | 'monthly' | 'export';
 
@@ -33,6 +34,20 @@ function AppContent() {
   const [onboardingDone, setOnboardingDone] = useState(() => isOnboardingComplete());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
+
+  // ── Android hardware/gesture BACK button ─────────────────────────────────
+  // Without this listener, Capacitor's default behavior backgrounds the app
+  // on ANY back press — even from a sub-tab — which feels broken.
+  // Behavior: close the nav drawer if open → return to Dashboard if on
+  // another tab → minimize the app only when already on Dashboard.
+  useEffect(() => {
+    const sub = CapacitorApp.addListener('backButton', () => {
+      if (mobileNavOpen) { setMobileNavOpen(false); return; }
+      if (activeTab !== 'dashboard') { setActiveTab('dashboard'); return; }
+      CapacitorApp.minimizeApp().catch(() => { /* web: no-op */ });
+    });
+    return () => { sub.then(s => s.remove()).catch(() => { /* web: no-op */ }); };
+  }, [mobileNavOpen, activeTab]);
 
   // ── CRITICAL: ALL hooks must be declared before any conditional return.
   // The original code placed useEffect hooks after an early `return` when

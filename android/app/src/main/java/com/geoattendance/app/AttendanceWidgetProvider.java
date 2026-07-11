@@ -124,6 +124,10 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                 v.setTextViewText(R.id.widget_large_checkout, d.checkOut);
                 v.setTextViewText(R.id.widget_large_gps,      d.lastGps);
                 v.setTextViewText(R.id.widget_large_updated,  d.updatedAt);
+                // Last 3 days, all profiles
+                v.setTextViewText(R.id.widget_large_day1, d.dayHistory[0]);
+                v.setTextViewText(R.id.widget_large_day2, d.dayHistory[1]);
+                v.setTextViewText(R.id.widget_large_day3, d.dayHistory[2]);
                 // Profile summary line (e.g. "2 present, 1 absent")
                 if (d.profileSummary != null && !d.profileSummary.isEmpty()) {
                     v.setTextViewText(R.id.widget_large_streak, d.streak + " day streak  |  " + d.profileSummary);
@@ -139,6 +143,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                 v.setTextViewText(R.id.widget_medium_checkin,  "In: " + d.checkIn);
                 v.setTextViewText(R.id.widget_medium_checkout, "Out: " + d.checkOut);
                 v.setTextViewText(R.id.widget_medium_gps,      "GPS: " + d.lastGps);
+                v.setTextViewText(R.id.widget_medium_history,  d.historyLine);
                 break;
         }
         return v;
@@ -236,6 +241,72 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             }
             d.streak = streak;
 
+            // ── Last 3 days, all profiles ─────────────────────────────────
+            // Per day: "Thu 09  Office ✓7h50m · SiteB ✗ · Home –"
+            SharedPreferences state2 = ctx.getSharedPreferences(PREFS_STATE, Context.MODE_PRIVATE);
+            JSONArray profiles;
+            try { profiles = new JSONArray(state2.getString("profiles", "[]")); }
+            catch (Exception e) { profiles = new JSONArray(); }
+
+            SimpleDateFormat dayLbl = new SimpleDateFormat("EEE dd", Locale.getDefault());
+            dayLbl.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
+            Calendar dayCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"));
+
+            StringBuilder compact = new StringBuilder();
+            for (int back = 0; back < 3; back++) {
+                String dateStr = df2.format(dayCal.getTime());
+                String label   = (back == 0) ? "Today" : dayLbl.format(dayCal.getTime());
+
+                StringBuilder row = new StringBuilder(label).append("  ");
+                int presentCnt = 0, absentCnt = 0;
+
+                for (int pi = 0; pi < profiles.length(); pi++) {
+                    JSONObject prof = profiles.getJSONObject(pi);
+                    String pid   = prof.optString("id", "");
+                    String pname = prof.optString("name", "?");
+                    if (pname.length() > 8) pname = pname.substring(0, 8);
+
+                    int totalMins   = 0;
+                    boolean present = false, absent = false, open = false;
+                    for (int li = 0; li < logs.length(); li++) {
+                        JSONObject l = logs.getJSONObject(li);
+                        if (!pid.equals(l.optString("profileId"))) continue;
+                        if (!dateStr.equals(l.optString("date")))  continue;
+                        if ("absent".equals(l.optString("status"))) { absent = true; continue; }
+                        present = true;
+                        if (l.isNull("checkOut")) open = true;
+                        else if (!l.isNull("duration")) totalMins += l.optInt("duration", 0);
+                    }
+
+                    if (pi > 0) row.append(" · ");
+                    if (present) {
+                        presentCnt++;
+                        row.append(pname).append(" ✓");
+                        if (open) row.append("now");
+                        else if (totalMins > 0) row.append(formatDuration(totalMins).replace(" ", ""));
+                    } else if (absent) {
+                        absentCnt++;
+                        row.append(pname).append(" ✗");
+                    } else {
+                        row.append(pname).append(" –");
+                    }
+                }
+                if (profiles.length() == 0) row.append("no profiles");
+                d.dayHistory[back] = row.toString();
+
+                // Compact line for the medium widget: "Today ✓2 · Thu ✓1✗1 · Wed –"
+                if (back > 0) compact.append(" · ");
+                compact.append(back == 0 ? "Today" : dayLbl.format(dayCal.getTime()).split(" ")[0]).append(" ");
+                if (presentCnt == 0 && absentCnt == 0) compact.append("–");
+                else {
+                    if (presentCnt > 0) compact.append("✓").append(presentCnt);
+                    if (absentCnt  > 0) compact.append("✗").append(absentCnt);
+                }
+
+                dayCal.add(Calendar.DAY_OF_YEAR, -1);
+            }
+            d.historyLine = compact.toString();
+
         } catch (Exception ignored) {}
     }
 
@@ -295,5 +366,8 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         String updatedAt     = "never";
         String profileSummary = "";
         int    streak        = 0;
+        // Last 3 days, all profiles (index 0 = today)
+        String[] dayHistory  = { "--", "--", "--" };
+        String   historyLine = "--";
     }
 }
