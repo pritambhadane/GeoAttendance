@@ -62,7 +62,7 @@ async function saveAndShare(filename: string, mimeType: string, base64Data: stri
   }
 
   // Web fallback
-  const blob = new Blob([rawBlobData ?? base64ToBytes(base64Data)], { type: mimeType });
+  const blob = new Blob([(rawBlobData ?? base64ToBytes(base64Data)) as BlobPart], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;

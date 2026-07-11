@@ -79,6 +79,25 @@ function timeToMinutes(hhmm: string): number {
   return h * 60 + (m || 0);
 }
 
+/** Normalize minutes into [0, 1439] so windows can wrap across midnight. */
+function wrapMins(mins: number): number {
+  return ((mins % 1440) + 1440) % 1440;
+}
+
+/** True if `now` is inside [start, end]; window may wrap across midnight. */
+function inWrappedWindow(now: number, start: number, end: number): boolean {
+  if (start <= end) return now >= start && now <= end;
+  return now >= start || now <= end;
+}
+
+/** Shift date string: post-midnight portion of an overnight shift belongs to yesterday. */
+function shiftDateFor(now: Date, postMidnight: boolean): string {
+  if (!postMidnight) return dateToStr(now);
+  const y = new Date(now);
+  y.setDate(y.getDate() - 1);
+  return dateToStr(y);
+}
+
 function safeDuration(ms: number): number {
   return Math.max(0, Math.round(ms / 60000));
 }
@@ -155,21 +174,25 @@ export function useAutomation() {
     const nowMins  = timeToMinutes(timeToStr(now));
     const nowDay   = now.getDay();
 
-    const todayLogs = logsRef.current.filter(l => l.date === todayStr);
-    const open      = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
+    // Open sessions are date-agnostic — overnight sessions stay visible after midnight
+    const open = logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
     if (open.length > 0) return 'checked-in';
 
+    const todayLogs = logsRef.current.filter(l => l.date === todayStr);
     const nonAbsent = todayLogs.filter(l => l.status !== 'absent');
     if (nonAbsent.length > 0 && nonAbsent[nonAbsent.length - 1].checkOut) return 'checked-out';
 
     // 'tracking' = inside active scan window (GPS should be on) but not yet checked in
-    // Scan window: [checkInTime - markAbsentAfter - 30]  to  [checkOutTime + 30]
+    // Scan window: [checkInTime - 30] to [checkOutTime + 30], wrap-safe for overnight
     const inWindow = profiles.some(p => {
       if (!p.active) return false;
-      if (p.workingDays.length > 0 && !p.workingDays.includes(nowDay)) return false;
-      const scanStart = timeToMinutes(p.checkInTime) - p.markAbsentAfter - 30;
-      const scanEnd   = timeToMinutes(p.checkOutTime) + 30;
-      return nowMins >= scanStart && nowMins <= scanEnd;
+      const scanStart = wrapMins(timeToMinutes(p.checkInTime) - 30);
+      const scanEnd   = wrapMins(timeToMinutes(p.checkOutTime) + 30);
+      const overnight = scanEnd < scanStart;
+      const postMidnight = overnight && nowMins <= scanEnd;
+      const anchorDay = postMidnight ? (nowDay + 6) % 7 : nowDay;
+      if (p.workingDays.length > 0 && !p.workingDays.includes(anchorDay)) return false;
+      return inWrappedWindow(nowMins, scanStart, scanEnd);
     });
     if (inWindow && (currentPosition !== null || simulation.enabled)) return 'tracking';
 
@@ -182,21 +205,23 @@ export function useAutomation() {
 
     // Close stale open sessions from previous days
     const closeStale = () => {
+      // Only close sessions that are open LONGER than the shift length + 2 h
+      // grace. This keeps legitimately-running overnight sessions (dated
+      // yesterday) alive so the geofence exit can close them properly.
       const now = getCurrentTime();
-      const todayStr = dateToStr(now);
       let updated = [...logsRef.current];
       let changed = false;
-      for (const log of updated.filter(l => l.checkOut === null && l.status !== 'absent' && l.date !== todayStr)) {
+      for (const log of updated.filter(l => l.checkOut === null && l.status !== 'absent')) {
         const profile = profiles.find(p => p.id === log.profileId);
         if (!profile) continue;
-        const closeAt = new Date(`${log.date}T${profile.checkOutTime}:00`);
-        if (closeAt < now) {
-          const duration = safeDuration(closeAt.getTime() - new Date(log.checkIn).getTime());
-          const expectedMins = profile.expectedHoursPerDay * 60;
-          updated = updated.map(l => l.id === log.id
-            ? { ...l, checkOut: closeAt.toISOString(), duration, attended: duration >= expectedMins * 0.5 } : l);
-          changed = true;
-        }
+        const shiftLen = wrapMins(timeToMinutes(profile.checkOutTime) - timeToMinutes(profile.checkInTime)) || 480;
+        const openMins = safeDuration(now.getTime() - new Date(log.checkIn).getTime());
+        if (openMins <= shiftLen + 120) continue; // plausibly still live
+        const closeAt = new Date(new Date(log.checkIn).getTime() + shiftLen * 60000);
+        const expectedMins = profile.expectedHoursPerDay * 60;
+        updated = updated.map(l => l.id === log.id
+          ? { ...l, checkOut: closeAt.toISOString(), duration: shiftLen, attended: shiftLen >= expectedMins * 0.5 } : l);
+        changed = true;
       }
       if (changed) { setLogs(updated); logsRef.current = updated; saveLogs(updated); }
     };
@@ -245,7 +270,11 @@ export function useAutomation() {
       let changed     = false;
 
       for (const profile of profiles.filter(p => p.active)) {
-        if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
+        const pOvernight = wrapMins(timeToMinutes(profile.checkOutTime) + 30) < wrapMins(timeToMinutes(profile.checkInTime) - 30);
+        const pPostMid   = pOvernight && nowMins <= wrapMins(timeToMinutes(profile.checkOutTime) + 30);
+        const pAnchorDay = pPostMid ? (nowDay + 6) % 7 : nowDay;
+        const pHasOpen   = logsRef.current.some(l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
+        if (!pHasOpen && profile.workingDays.length > 0 && !profile.workingDays.includes(pAnchorDay)) continue;
 
         const dist    = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
         const inFence = dist <= profile.radius;
@@ -254,29 +283,39 @@ export function useAutomation() {
         const markAfter = profile.markAbsentAfter;
         const expMins   = profile.expectedHoursPerDay * 60;
 
-        // Active check-in window: [checkInTime - markAbsentAfter] to [checkOutTime]
-        const windowStart = ciMins - markAfter;
-        const windowEnd   = coMins;
-        const inCheckInWindow = nowMins >= windowStart && nowMins <= windowEnd;
+        // Shift-date attribution: post-midnight part of an overnight shift → yesterday
+        const scanEnd      = wrapMins(coMins + 30);
+        const overnight    = scanEnd < wrapMins(ciMins - 30);
+        const postMidnight = overnight && nowMins <= scanEnd;
+        const shiftStr     = shiftDateFor(now, postMidnight);
 
+        // First check-in window: checkInTime ± markAbsentAfter (requirement).
+        // Re-entries after an earlier session are allowed until checkOutTime.
+        const windowStart = wrapMins(ciMins - markAfter);
+        const windowEnd   = wrapMins(ciMins + markAfter);
+        const inFirstWindow   = inWrappedWindow(nowMins, windowStart, windowEnd);
+        const inReEntryWindow = inWrappedWindow(nowMins, windowStart, wrapMins(coMins));
+
+        // Open sessions are date-agnostic — overnight sessions survive midnight
         const hasOpen = updatedLogs.some(l =>
-          l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
+          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
         const sessionCount = updatedLogs.filter(l =>
-          l.profileId === profile.id && l.date === nowStr && l.status !== 'absent').length;
+          l.profileId === profile.id && l.date === shiftStr && l.status !== 'absent').length;
+        const inCheckInWindow = sessionCount > 0 ? inReEntryWindow : inFirstWindow;
 
         // ── AUTO CHECK-IN: geofence entry within window ─────────────────
         // No time-gate — geofence alone determines presence.
         if (!hasOpen && inFence && inCheckInWindow) {
           const absentMarked = updatedLogs.some(
-            l => l.profileId === profile.id && l.date === nowStr && l.status === 'absent');
+            l => l.profileId === profile.id && l.date === shiftStr && l.status === 'absent');
           const ciKey = sessionCount === 0
-            ? `checkin:${profile.id}:${nowStr}`
-            : `reentry:${profile.id}:${nowStr}:${sessionCount}`;
+            ? `checkin:${profile.id}:${shiftStr}`
+            : `reentry:${profile.id}:${shiftStr}:${sessionCount}`;
 
           if (!absentMarked && !dedupRef.current.has(ciKey)) {
             const newLog: AttendanceLog = {
               id: generateId(), profileId: profile.id, profileName: profile.name,
-              date: nowStr, checkIn: now.toISOString(),
+              date: shiftStr, checkIn: now.toISOString(),
               checkOut: null, duration: null, status: 'auto', profileColor: profile.color, attended: true,
             };
             updatedLogs = [...updatedLogs, newLog];
@@ -288,22 +327,10 @@ export function useAutomation() {
         }
 
         const openLog = updatedLogs.find(
-          l => l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent');
+          l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
 
-        // ── AUTO CHECK-OUT: scheduled checkout time ──────────────────────
-        if (openLog && Math.abs(nowMins - coMins) <= 1) {
-          const outKey = `out:${profile.id}:${nowStr}`;
-          if (!dedupRef.current.has(outKey)) {
-            const duration = safeDuration(now.getTime() - new Date(openLog.checkIn).getTime());
-            updatedLogs = updatedLogs.map(l => l.id === openLog.id
-              ? { ...l, checkOut: now.toISOString(), duration, attended: duration >= expMins * 0.5, status: 'auto' as const }
-              : l);
-            dedupRef.current.add(outKey);
-            saveDedup(dedupRef.current, nowStr);
-            changed = true;
-            notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-          }
-        }
+        // NOTE: time-based scheduled checkout REMOVED — check-out is
+        // triggered exclusively by geofence exit, per requirements.
 
         // ── AUTO CHECK-OUT: geofence exit (2 consecutive out-of-fence ticks) ──
         if (openLog && !inFence) {
@@ -331,14 +358,16 @@ export function useAutomation() {
         }
 
         // ── MARK ABSENT ──────────────────────────────────────────────────
-        if (!openLog && !inFence && nowMins > ciMins + markAfter) {
-          const absentKey = `absent:${profile.id}:${nowStr}`;
-          const hasAnyLog = updatedLogs.some(l => l.profileId === profile.id && l.date === nowStr);
+        // Past the check-in window but before scan end — wrap-safe for overnight
+        const pastWindow = inWrappedWindow(nowMins, wrapMins(ciMins + markAfter + 1), scanEnd);
+        if (!openLog && !inFence && pastWindow) {
+          const absentKey = `absent:${profile.id}:${shiftStr}`;
+          const hasAnyLog = updatedLogs.some(l => l.profileId === profile.id && l.date === shiftStr);
           if (!hasAnyLog && !dedupRef.current.has(absentKey)) {
             updatedLogs = [...updatedLogs, {
               id: generateId(), profileId: profile.id, profileName: profile.name,
-              date: nowStr,
-              checkIn: `${nowStr}T${profile.checkInTime}:00+05:30`,
+              date: shiftStr,
+              checkIn: `${shiftStr}T${profile.checkInTime}:00+05:30`,
               checkOut: null, duration: null, status: 'absent' as const,
               profileColor: profile.color, attended: false,
             }];
@@ -360,7 +389,6 @@ export function useAutomation() {
       if (schedulerTimer) clearTimeout(schedulerTimer);
       const now     = getCurrentTime();
       const nowMins = timeToMinutes(timeToStr(now));
-      const nowStr  = dateToStr(now);
       const nowDay  = now.getDay();
 
       let inScanWindow = false;
@@ -368,24 +396,29 @@ export function useAutomation() {
       let msToNext     = Infinity;
 
       for (const profile of profiles.filter(p => p.active)) {
-        if (profile.workingDays.length > 0 && !profile.workingDays.includes(nowDay)) continue;
+        const ciMins    = timeToMinutes(profile.checkInTime);
+        const coMins    = timeToMinutes(profile.checkOutTime);
+        // Requirement: scanning starts exactly 30 min before check-in time
+        const scanStart = wrapMins(ciMins - 30);
+        const scanEnd   = wrapMins(coMins + 30);
 
-        const ciMins      = timeToMinutes(profile.checkInTime);
-        const coMins      = timeToMinutes(profile.checkOutTime);
-        const markAfter   = profile.markAbsentAfter;
-        const scanStart   = ciMins - markAfter - 30;
-        const scanEnd     = coMins + 30;
-
+        // Open sessions always keep the scheduler active (date-agnostic,
+        // checked before the working-day filter — overnight-safe)
         if (logsRef.current.some(l =>
-          l.profileId === profile.id && l.date === nowStr && l.checkOut === null && l.status !== 'absent')) {
+          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent')) {
           hasOpen = true;
           inScanWindow = true;
         }
 
-        if (nowMins >= scanStart && nowMins <= scanEnd) {
+        const overnight    = scanEnd < scanStart;
+        const postMidnight = overnight && nowMins <= scanEnd;
+        const anchorDay    = postMidnight ? (nowDay + 6) % 7 : nowDay;
+        if (profile.workingDays.length > 0 && !profile.workingDays.includes(anchorDay)) continue;
+
+        if (inWrappedWindow(nowMins, scanStart, scanEnd)) {
           inScanWindow = true;
-        } else if (nowMins < scanStart) {
-          const ms = (scanStart - nowMins) * 60_000;
+        } else {
+          const ms = wrapMins(scanStart - nowMins) * 60_000;
           if (ms < msToNext) msToNext = ms;
         }
       }

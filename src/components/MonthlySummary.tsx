@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import {
   BarChart3, TrendingUp, TrendingDown, Clock, CheckCircle2,
-  XCircle, Calendar, ChevronLeft, ChevronRight, AlertTriangle,
+  Calendar, ChevronLeft, ChevronRight, AlertTriangle,
   Award, Target, Flame, Zap, Users,
 } from 'lucide-react';
 import { AttendanceLog } from '../types';

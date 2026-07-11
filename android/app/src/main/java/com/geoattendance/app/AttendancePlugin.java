@@ -155,11 +155,11 @@ public class AttendancePlugin extends Plugin {
                     now.get(java.util.Calendar.MONTH) + 1,
                     now.get(java.util.Calendar.DAY_OF_MONTH));
 
-            // Check if already checked in (exclude absent records)
+            // Check if already checked in (exclude absent records).
+            // Date-agnostic: an open overnight session from yesterday also blocks.
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
-                        && dateStr.equals(l.optString("date"))
                         && l.isNull("checkOut")
                         && !"absent".equals(l.optString("status"))) {
                     call.reject("Already checked in");
@@ -189,6 +189,7 @@ public class AttendancePlugin extends Plugin {
             updated.put(newLog);
 
             logsPrefs.edit().putString("logs", updated.toString()).apply();
+            AttendanceWidgetProvider.refreshAll(getContext());
 
             Log.i(TAG, "Manual check-in: " + profile.getString("name"));
             JSObject ret = new JSObject();
@@ -231,7 +232,8 @@ public class AttendancePlugin extends Plugin {
                 JSONObject l = logs.getJSONObject(i);
                 if (!l.isNull("checkOut")) continue;
                 if ("absent".equals(l.optString("status"))) continue;
-                if (!dateStr.equals(l.optString("date"))) continue;
+                // No date filter: an overnight session opened yesterday must
+                // still be closable after midnight.
                 if (profileId != null && !profileId.equals(l.optString("profileId"))) continue;
 
                 long checkInMs;
@@ -266,6 +268,7 @@ public class AttendancePlugin extends Plugin {
 
             if (changed) {
                 logsPrefs.edit().putString("logs", logs.toString()).apply();
+                AttendanceWidgetProvider.refreshAll(getContext());
             }
 
             JSObject ret = new JSObject();

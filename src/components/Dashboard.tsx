@@ -1,6 +1,6 @@
 import {
   MapPin, Clock, Timer, Activity,
-  TrendingUp, CalendarDays, Radio, Users, Crosshair,
+  CalendarDays, Radio, Users, Crosshair,
 } from 'lucide-react';
 import { AttendanceLog, LocationProfile, TrackingStatus } from '../types';
 import { formatDuration, calculateDistance } from '../utils/storage';
