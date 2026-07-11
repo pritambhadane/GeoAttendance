@@ -69,10 +69,25 @@ public class AttendanceForegroundService extends Service {
     private LocationListener locationListener;
     private Location         lastLocation;
     private boolean          gpsActive = false;
+    private long             tickIntervalMs = GPS_MIN_TIME_MS; // honors profile "checkEvery"
 
     // GPS update params while actively scanning
     private static final long  GPS_MIN_TIME_MS    = 30_000; // 30 s between updates
-    private static final float GPS_MIN_DISTANCE_M = 10f;    // 10 m minimum movement
+    // MUST be 0: with a distance filter, Android suppresses updates while the
+    // user is stationary, fixes go stale, and the freshness guard stalls all
+    // attendance decisions (absent marking, exit detection).
+    private static final float GPS_MIN_DISTANCE_M = 0f;
+
+    // Fixes with worse accuracy than this are unusable for fence decisions
+    private static final float MAX_USABLE_ACCURACY_M = 200f;
+    // Extra buffer beyond the radius required to count as OUTSIDE the fence
+    // (hysteresis — prevents boundary flapping and jitter-driven checkouts)
+    private static final float EXIT_BUFFER_MIN_M = 30f;
+
+    // Exit debounce: profileId → first tick (epoch ms) we saw them outside.
+    // Checkout only fires after two consecutive outside ticks (≥ 45 s apart-ish),
+    // matching the web fallback's behavior.
+    private final java.util.HashMap<String, Long> exitPendingAt = new java.util.HashMap<>();
 
     // ── Scheduler ─────────────────────────────────────────────────────────────
     private final Handler  handler      = new Handler(Looper.getMainLooper());
@@ -169,6 +184,14 @@ public class AttendanceForegroundService extends Service {
             locationListener = new LocationListener() {
                 @Override
                 public void onLocationChanged(@NonNull Location location) {
+                    // Attendance integrity: ignore spoofed locations from fake-GPS apps
+                    boolean mock = Build.VERSION.SDK_INT >= 31
+                            ? location.isMock()
+                            : location.isFromMockProvider();
+                    if (mock) {
+                        Log.w(TAG, "Ignoring MOCK location fix (fake GPS app?)");
+                        return;
+                    }
                     lastLocation = location;
                     Log.d(TAG, String.format("GPS: %.5f,%.5f acc=%.0fm",
                             location.getLatitude(), location.getLongitude(), location.getAccuracy()));
@@ -184,7 +207,7 @@ public class AttendanceForegroundService extends Service {
             //noinspection MissingPermission
             locationManager.requestLocationUpdates(
                     LocationManager.GPS_PROVIDER,
-                    GPS_MIN_TIME_MS,
+                    tickIntervalMs,
                     GPS_MIN_DISTANCE_M,
                     locationListener,
                     Looper.getMainLooper());
@@ -197,7 +220,7 @@ public class AttendanceForegroundService extends Service {
                     //noinspection MissingPermission
                     locationManager.requestLocationUpdates(
                             LocationManager.NETWORK_PROVIDER,
-                            GPS_MIN_TIME_MS,
+                            tickIntervalMs,
                             GPS_MIN_DISTANCE_M,
                             locationListener,
                             Looper.getMainLooper());
@@ -312,10 +335,26 @@ public class AttendanceForegroundService extends Service {
                 }
 
                 if (inScanWindow || anyActive) {
+                    // Honor the smallest configured "check every" among active
+                    // profiles (UI options: 1–30 min); floor at 30 s.
+                    long wanted = GPS_MIN_TIME_MS;
+                    int minEvery = Integer.MAX_VALUE;
+                    for (int i = 0; i < profs.length(); i++) {
+                        JSONObject p = profs.optJSONObject(i);
+                        if (p == null || !p.optBoolean("active", false)) continue;
+                        minEvery = Math.min(minEvery, Math.max(1, p.optInt("checkEvery", 1)));
+                    }
+                    if (minEvery != Integer.MAX_VALUE) {
+                        wanted = Math.max(30_000L, minEvery * 60_000L);
+                    }
+                    if (wanted != tickIntervalMs) {
+                        tickIntervalMs = wanted;
+                        if (gpsActive) { stopGPS(); } // restart with new interval
+                        Log.i(TAG, "Tick interval set to " + (tickIntervalMs / 1000) + " s (checkEvery)");
+                    }
                     startGPS();
                     runTick(false);
-                    // Re-schedule in 30 s
-                    handler.postDelayed(this, 30_000);
+                    handler.postDelayed(this, tickIntervalMs);
                 } else {
                     stopGPS();
                     // Sleep until 1 min before next scan window (min 1 min, max 60 min)
@@ -359,6 +398,13 @@ public class AttendanceForegroundService extends Service {
         long fixAgeMs = System.currentTimeMillis() - lastLocation.getTime();
         if (fixAgeMs > 5 * 60_000) {
             Log.d(TAG, "Tick skipped — GPS fix is " + (fixAgeMs / 60_000) + " min old");
+            return;
+        }
+
+        // Never make attendance decisions on a garbage fix. A 500 m-accuracy
+        // fix says nothing about a 50 m fence.
+        if (lastLocation.getAccuracy() > MAX_USABLE_ACCURACY_M) {
+            Log.d(TAG, "Tick skipped — fix accuracy " + (int) lastLocation.getAccuracy() + " m too poor");
             return;
         }
 
@@ -409,8 +455,13 @@ public class AttendanceForegroundService extends Service {
                 if (!hasOpenSession && workingDays != null && workingDays.length() > 0
                         && !arrayContains(workingDays, anchorDay)) continue;
 
-                double  dist    = haversine(lastLocation.getLatitude(), lastLocation.getLongitude(), lat, lon);
-                boolean isWithin = dist <= radius;
+                double  dist     = haversine(lastLocation.getLatitude(), lastLocation.getLongitude(), lat, lon);
+                boolean isWithin  = dist <= radius;
+                // OUTSIDE requires clearing the radius plus an accuracy-aware
+                // buffer, so a jittery fix at the boundary never causes a
+                // false checkout (classic enter/exit hysteresis).
+                double  exitBuffer = Math.max(EXIT_BUFFER_MIN_M, lastLocation.getAccuracy());
+                boolean isClearlyOutside = dist > radius + exitBuffer;
 
                 // ── AUTO CHECK-IN ────────────────────────────────────────────
                 // Geofence presence is the ONLY trigger.
@@ -454,27 +505,39 @@ public class AttendanceForegroundService extends Service {
                 // Auto check-out fires ONLY on geofence exit (see block below).
 
                 // ── AUTO CHECK-OUT: geofence exit (the ONLY checkout trigger) ─
-                // Date-agnostic: closes overnight sessions after midnight too.
-                if (hasOpenSession && !isWithin) {
+                // Date-agnostic (overnight-safe). Requires TWO consecutive
+                // clearly-outside ticks (radius + accuracy buffer) so one
+                // noisy GPS fix never checks the user out.
+                if (hasOpenSession && isClearlyOutside) {
                     JSONObject openLog = findOpenLog(logs, profileId);
                     if (openLog != null) {
                         long checkInEpoch   = isoToEpoch(openLog.getString("checkIn"));
                         long minutesSinceIn = (now.getTimeInMillis() - checkInEpoch) / 60000;
                         if (minutesSinceIn > 5) {
-                            String exitKey = "exit:" + openLog.getString("id");
-                            String logShiftDate = openLog.optString("date", shiftDateStr);
-                            if (!isProcessed(profileId, logShiftDate, exitKey)) {
-                                logs = closeOpenSession(logs, profileId, now, expectedHrs);
-                                logsChanged = true;
-                                markProcessed(profileId, logShiftDate, exitKey);
-                                // Record exit time so scheduler keeps GPS on for 30 min
-                                exitDetectedAt.put(profileId, now.getTimeInMillis());
-                                if (notifOn) sendEventNotification("📍 Left Geofence – " + profileName,
-                                        "Check-out at " + currentTimeStr);
-                                Log.i(TAG, "CHECKOUT (exit): " + profileName + " at " + currentTimeStr);
+                            if (!exitPendingAt.containsKey(profileId)) {
+                                // First outside tick: arm the debounce, wait for confirmation
+                                exitPendingAt.put(profileId, now.getTimeInMillis());
+                                Log.d(TAG, "Exit pending for " + profileName + " (awaiting confirmation tick)");
+                            } else {
+                                String exitKey = "exit:" + openLog.getString("id");
+                                String logShiftDate = openLog.optString("date", shiftDateStr);
+                                if (!isProcessed(profileId, logShiftDate, exitKey)) {
+                                    logs = closeOpenSession(logs, profileId, now, expectedHrs);
+                                    logsChanged = true;
+                                    markProcessed(profileId, logShiftDate, exitKey);
+                                    exitPendingAt.remove(profileId);
+                                    // Record exit time so scheduler keeps GPS on for 30 min
+                                    exitDetectedAt.put(profileId, now.getTimeInMillis());
+                                    if (notifOn) sendEventNotification("📍 Left Geofence – " + profileName,
+                                            "Check-out at " + currentTimeStr);
+                                    Log.i(TAG, "CHECKOUT (exit): " + profileName + " at " + currentTimeStr);
+                                }
                             }
                         }
                     }
+                } else if (isWithin) {
+                    // Back inside (or never clearly out): disarm the debounce
+                    exitPendingAt.remove(profileId);
                 }
 
                 // Clear exit linger if user re-entered the fence
@@ -488,7 +551,7 @@ public class AttendanceForegroundService extends Service {
                 // but still before the shift's scan end. Wrap-safe for overnight.
                 boolean pastWindow = inWrappedWindow(currentMinutes,
                         wrapMins(ciMins + markAbsentAfter + 1), scanEndMins);
-                if (!hasOpenSession && !isWithin && pastWindow) {
+                if (!hasOpenSession && isClearlyOutside && pastWindow) {
                     boolean existsToday = hasAnyLogToday(logs, profileId, shiftDateStr);
                     boolean absentDone  = isProcessed(profileId, shiftDateStr, "absent");
                     if (!existsToday && !absentDone) {

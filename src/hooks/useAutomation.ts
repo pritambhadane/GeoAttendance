@@ -266,6 +266,8 @@ export function useAutomation() {
       const now     = getCurrentTime();
       const coords  = getCurrentCoords();
       if (!coords) return;
+      // Never make attendance decisions on a garbage fix (simulation has accuracy 0)
+      if (coords.accuracy > 200) return;
 
       const nowStr  = dateToStr(now);
       const nowMins = timeToMinutes(timeToStr(now));
