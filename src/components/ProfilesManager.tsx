@@ -5,6 +5,8 @@ import {
 } from 'lucide-react';
 import { LocationProfile } from '../types';
 import { getCurrentPosition, getDayName } from '../utils/storage';
+import GeofenceMap from './GeofenceMap';
+import { Bell, BellOff } from 'lucide-react';
 
 interface ProfilesManagerProps {
   profiles: LocationProfile[];
@@ -36,6 +38,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
   const [markAbsentAfter, setMarkAbsentAfter] = useState(30);
   const [customAbsent, setCustomAbsent] = useState('');
   const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [capturing, setCapturing] = useState(false);
 
   const resetForm = () => {
@@ -45,6 +48,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
     setExpectedHoursPerDay(8); setCustomHours('');
     setCheckEvery(5); setMarkAbsentAfter(30); setCustomAbsent('');
     setWorkingDays([1, 2, 3, 4, 5]);
+    setNotificationsEnabled(true);
     setEditingId(null);
   };
 
@@ -78,6 +82,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
       checkEvery,
       markAbsentAfter: effectiveAbsent,
       workingDays,
+      notificationsEnabled,
     };
     if (editingId) {
       onUpdate(editingId, data);
@@ -106,6 +111,7 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
     setMarkAbsentAfter(isPresetAbsent ? p.markAbsentAfter : ABSENT_OPTIONS[0]);
     setCustomAbsent(isPresetAbsent ? '' : p.markAbsentAfter.toString());
     setWorkingDays([...p.workingDays]);
+    setNotificationsEnabled(p.notificationsEnabled ?? true);
     setShowForm(true);
   };
 
@@ -185,6 +191,29 @@ export default function ProfilesManager({ profiles, onAdd, onUpdate, onDelete, o
           >
             <Navigation className="h-4 w-4" />
             {capturing ? 'Capturing GPS...' : 'Capture Current Location'}
+          </button>
+
+          {/* Geofence preview — see exactly what area triggers check-in */}
+          {latitude && longitude && !isNaN(parseFloat(latitude)) && !isNaN(parseFloat(longitude)) && (
+            <GeofenceMap
+              latitude={parseFloat(latitude)}
+              longitude={parseFloat(longitude)}
+              radius={customRadius ? parseInt(customRadius) || 100 : radius}
+              onPick={(lat, lng) => { setLatitude(lat.toString()); setLongitude(lng.toString()); }}
+            />
+          )}
+
+          {/* Per-profile notifications */}
+          <button
+            onClick={() => setNotificationsEnabled(v => !v)}
+            className={`w-full rounded-xl border font-medium text-sm py-2.5 flex items-center justify-center gap-2 transition ${
+              notificationsEnabled
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950 dark:border-emerald-800 dark:text-emerald-300'
+                : 'bg-slate-100 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400'
+            }`}
+          >
+            {notificationsEnabled ? <Bell className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+            {notificationsEnabled ? 'Notifications: On' : 'Notifications: Off'}
           </button>
 
           <div>

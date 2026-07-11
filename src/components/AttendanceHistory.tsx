@@ -2,23 +2,65 @@ import { useState } from 'react';
 import {
   Calendar, Filter, ArrowUpDown,
   CheckCircle2, UserCheck, ThumbsUp, ThumbsDown, UserX,
+  Plus, Plane, Edit3, Trash2, X, Check,
 } from 'lucide-react';
-import { AttendanceLog } from '../types';
+import { AttendanceLog, LocationProfile } from '../types';
 import { formatDuration } from '../utils/storage';
 
 interface AttendanceHistoryProps {
   logs: AttendanceLog[];
+  profiles: LocationProfile[];
   onClear: () => void;
+  onAddManual: (profileId: string, date: string, checkIn: string, checkOut: string | null) => void;
+  onUpdateRecord: (logId: string, checkIn: string, checkOut: string | null) => void;
+  onDeleteRecord: (logId: string) => void;
+  onMarkLeave: (date: string, profileId: string | null) => void;
 }
 
 type SortKey = 'date' | 'profileName' | 'duration' | 'status' | 'attended';
 type SortDir = 'asc' | 'desc';
-type FilterStatus = 'all' | 'auto' | 'manual' | 'absent';
+type FilterStatus = 'all' | 'auto' | 'manual' | 'absent' | 'leave';
 
-export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryProps) {
+function isoToHHMM(iso: string): string {
+  try {
+    const d = new Date(iso);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  } catch { return '09:00'; }
+}
+
+export default function AttendanceHistory({
+  logs, profiles, onClear, onAddManual, onUpdateRecord, onDeleteRecord, onMarkLeave,
+}: AttendanceHistoryProps) {
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
+  // Add-record / mark-leave form
+  const [formMode, setFormMode] = useState<'add' | 'leave' | null>(null);
+  const [fProfile, setFProfile] = useState('');
+  const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [fIn, setFIn] = useState('09:00');
+  const [fOut, setFOut] = useState('17:00');
+  // Inline row editing
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [eIn, setEIn] = useState('09:00');
+  const [eOut, setEOut] = useState('');
+
+  const submitForm = () => {
+    if (formMode === 'add') {
+      if (!fProfile || !fDate || !fIn) return;
+      onAddManual(fProfile, fDate, fIn, fOut || null);
+    } else if (formMode === 'leave') {
+      if (!fDate) return;
+      onMarkLeave(fDate, fProfile || null);
+    }
+    setFormMode(null);
+  };
+
+  const startEdit = (log: AttendanceLog) => {
+    setEditingId(log.id);
+    setEIn(isoToHHMM(log.checkIn));
+    setEOut(log.checkOut ? isoToHHMM(log.checkOut) : '');
+  };
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
@@ -46,6 +88,19 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
           <h2 className="text-xl font-bold text-heading">Attendance History</h2>
           <p className="text-sm text-sub">{logs.length} log entries</p>
         </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setFormMode(formMode === 'add' ? null : 'add'); setFProfile(profiles[0]?.id ?? ''); }}
+            className="rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 text-sm font-medium hover:bg-indigo-100 transition flex items-center gap-1 dark:bg-indigo-950 dark:text-indigo-300 dark:border-indigo-800 dark:hover:bg-indigo-900"
+          >
+            <Plus className="h-3.5 w-3.5" /> Add Record
+          </button>
+          <button
+            onClick={() => { setFormMode(formMode === 'leave' ? null : 'leave'); setFProfile(''); }}
+            className="rounded-xl bg-sky-50 text-sky-600 border border-sky-200 px-3 py-1.5 text-sm font-medium hover:bg-sky-100 transition flex items-center gap-1 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800 dark:hover:bg-sky-900"
+          >
+            <Plane className="h-3.5 w-3.5" /> Mark Leave
+          </button>
         {logs.length > 0 && (
           <button
             onClick={onClear}
@@ -54,12 +109,52 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
             Clear All
           </button>
         )}
+        </div>
       </div>
+
+      {/* Add-record / Mark-leave form */}
+      {formMode && (
+        <div className="card p-4 space-y-3">
+          <h3 className="font-semibold text-heading text-sm">
+            {formMode === 'add' ? 'Add manual record' : 'Mark leave / holiday'}
+          </h3>
+          <div className="grid grid-cols-2 gap-2">
+            <select
+              value={fProfile}
+              onChange={e => setFProfile(e.target.value)}
+              className="input-field"
+            >
+              {formMode === 'leave' && <option value="">All profiles</option>}
+              {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <input type="date" value={fDate} onChange={e => setFDate(e.target.value)} className="input-field" />
+            {formMode === 'add' && (
+              <>
+                <div>
+                  <label className="text-label mb-1 block">Check-in</label>
+                  <input type="time" value={fIn} onChange={e => setFIn(e.target.value)} className="input-field" />
+                </div>
+                <div>
+                  <label className="text-label mb-1 block">Check-out (optional)</label>
+                  <input type="time" value={fOut} onChange={e => setFOut(e.target.value)} className="input-field" />
+                </div>
+              </>
+            )}
+          </div>
+          {formMode === 'leave' && (
+            <p className="text-xs text-sub">Leave days are never marked absent and don't break your streak.</p>
+          )}
+          <div className="flex gap-2">
+            <button onClick={submitForm} className="rounded-xl bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 transition">Save</button>
+            <button onClick={() => setFormMode(null)} className="rounded-xl bg-slate-100 text-slate-600 px-4 py-2 text-sm font-medium hover:bg-slate-200 transition dark:bg-slate-800 dark:text-slate-300">Cancel</button>
+          </div>
+        </div>
+      )}
 
       {/* Filters — now includes Absent (fix #11) */}
       <div className="flex items-center gap-2 flex-wrap">
         <Filter className="h-4 w-4 text-slate-400 dark:text-slate-500" />
-        {(['all', 'auto', 'manual', 'absent'] as const).map(s => (
+        {(['all', 'auto', 'manual', 'absent', 'leave'] as const).map(s => (
           <button
             key={s}
             onClick={() => setFilterStatus(s)}
@@ -69,7 +164,7 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
             }`}
           >
-            {s === 'all' ? 'All' : s === 'auto' ? 'Auto' : s === 'manual' ? 'Manual' : 'Absent'}
+            {s === 'all' ? 'All' : s === 'auto' ? 'Auto' : s === 'manual' ? 'Manual' : s === 'absent' ? 'Absent' : 'Leave'}
           </button>
         ))}
         <div className="border-l border-slate-200 dark:border-slate-700 pl-2 ml-1 flex items-center gap-1">
@@ -103,13 +198,15 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
           {filtered.map(log => {
             const checkInTime = new Date(log.checkIn);
             const checkOutTime = log.checkOut ? new Date(log.checkOut) : null;
-            const isOpen = log.checkOut === null && log.status !== 'absent';
+            const isOpen = log.checkOut === null && log.status !== 'absent' && log.status !== 'leave';
             const isAbsent = log.status === 'absent';
+            const isLeave = log.status === 'leave';
+            const isEditing = editingId === log.id;
 
             return (
               <div key={log.id} className={`card p-4 transition-all ${
                 isOpen ? 'border-emerald-200 ring-1 ring-emerald-100 dark:border-emerald-800 dark:ring-emerald-900' : ''
-              } ${isAbsent ? 'border-rose-200 dark:border-rose-900' : ''}`}>
+              } ${isAbsent ? 'border-rose-200 dark:border-rose-900' : ''} ${isLeave ? 'border-sky-200 dark:border-sky-900' : ''}`}>
                 <div className="flex items-start justify-between">
                   <div className="flex items-center gap-3">
                     <div className="h-10 w-10 rounded-xl flex items-center justify-center text-white text-sm font-bold" style={{ backgroundColor: log.profileColor }}>
@@ -127,8 +224,12 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
                         Active
                       </span>
                     )}
-                    {/* Fix #11: Absent badge, distinct from Auto/Manual */}
-                    {isAbsent ? (
+                    {/* Status badge: Leave / Absent / Auto / Manual */}
+                    {isLeave ? (
+                      <span className="rounded-lg px-2 py-0.5 text-xs font-semibold bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300">
+                        <span className="flex items-center gap-1"><Plane className="h-3 w-3" /> Leave</span>
+                      </span>
+                    ) : isAbsent ? (
                       <span className="rounded-lg px-2 py-0.5 text-xs font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300">
                         <span className="flex items-center gap-1"><UserX className="h-3 w-3" /> Absent</span>
                       </span>
@@ -141,11 +242,49 @@ export default function AttendanceHistory({ logs, onClear }: AttendanceHistoryPr
                         )}
                       </span>
                     )}
+                    {!isAbsent && !isLeave && !isOpen && (
+                      <button onClick={() => startEdit(log)} className="rounded-lg p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition dark:hover:bg-indigo-950" title="Edit times">
+                        <Edit3 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => { if (confirm(`Delete this ${log.status} record for ${log.profileName} on ${log.date}?`)) onDeleteRecord(log.id); }}
+                      className="rounded-lg p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition dark:hover:bg-rose-950" title="Delete record">
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
                   </div>
                 </div>
 
-                {/* Fix #11: Absent records show a simple absent notice instead of fake time cells */}
-                {isAbsent ? (
+                {/* Inline edit form */}
+                {isEditing && (
+                  <div className="mt-3 rounded-xl bg-indigo-50 border border-indigo-100 p-3 dark:bg-indigo-950 dark:border-indigo-900 flex items-end gap-2 flex-wrap">
+                    <div>
+                      <label className="text-label mb-1 block">Check-in</label>
+                      <input type="time" value={eIn} onChange={e => setEIn(e.target.value)} className="input-field" />
+                    </div>
+                    <div>
+                      <label className="text-label mb-1 block">Check-out</label>
+                      <input type="time" value={eOut} onChange={e => setEOut(e.target.value)} className="input-field" />
+                    </div>
+                    <button onClick={() => { onUpdateRecord(log.id, eIn, eOut || null); setEditingId(null); }}
+                      className="rounded-xl bg-indigo-600 text-white p-2 hover:bg-indigo-700 transition"><Check className="h-4 w-4" /></button>
+                    <button onClick={() => setEditingId(null)}
+                      className="rounded-xl bg-slate-200 text-slate-600 p-2 hover:bg-slate-300 transition dark:bg-slate-700 dark:text-slate-300"><X className="h-4 w-4" /></button>
+                  </div>
+                )}
+
+                {/* Leave notice */}
+                {isLeave && (
+                  <div className="mt-3 rounded-xl bg-sky-50 border border-sky-100 p-3 dark:bg-sky-950 dark:border-sky-900">
+                    <p className="text-sm text-sky-700 dark:text-sky-300 font-medium flex items-center gap-2">
+                      <Plane className="h-4 w-4 flex-shrink-0" />
+                      Leave / holiday — not counted as absent, streak preserved
+                    </p>
+                  </div>
+                )}
+
+                {/* Absent records show a simple absent notice instead of fake time cells */}
+                {isLeave ? null : isAbsent ? (
                   <div className="mt-3 rounded-xl bg-rose-50 border border-rose-100 p-3 dark:bg-rose-950 dark:border-rose-900">
                     <p className="text-sm text-rose-700 dark:text-rose-300 font-medium flex items-center gap-2">
                       <UserX className="h-4 w-4 flex-shrink-0" />

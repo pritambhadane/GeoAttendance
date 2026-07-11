@@ -12,6 +12,7 @@ export interface LocationProfile {
   checkEvery: number; // minutes between location checks (runtime key — must match Java optInt("checkEvery"))
   markAbsentAfter: number; // minutes after check-in time to mark absent
   workingDays: number[]; // 0=Sun, 1=Mon, ..., 6=Sat
+  notificationsEnabled: boolean; // per-profile event notifications
 }
 
 export interface AttendanceLog {
@@ -22,7 +23,7 @@ export interface AttendanceLog {
   checkIn: string; // ISO timestamp
   checkOut: string | null; // ISO timestamp
   duration: number | null; // minutes
-  status: 'auto' | 'manual' | 'absent';
+  status: 'auto' | 'manual' | 'absent' | 'leave';
   profileColor: string;
   attended: boolean;
 }

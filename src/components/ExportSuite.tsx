@@ -1,7 +1,7 @@
 import {
   FileSpreadsheet, FileText, Share2, Printer,
 } from 'lucide-react';
-import { AttendanceLog } from '../types';
+import { AttendanceLog, LocationProfile } from '../types';
 import { formatDuration } from '../utils/storage';
 import { isNative } from '../services/capacitor';
 import jsPDF from 'jspdf';
@@ -10,10 +10,15 @@ import autoTable from 'jspdf-autotable';
 interface ExportSuiteProps {
   logs: AttendanceLog[];
   weeklyMinutes: number;
+  profiles: LocationProfile[];
+  onRestore: (profiles: LocationProfile[], logs: AttendanceLog[]) => void;
 }
+
+const BACKUP_VERSION = 1;
 
 function statusLabel(log: AttendanceLog): string {
   if (log.status === 'absent') return 'Absent';
+  if (log.status === 'leave') return 'Leave';
   return log.status === 'auto' ? 'Auto' : 'Manual';
 }
 
@@ -85,7 +90,44 @@ function textToBase64(text: string): string {
   return btoa(unescape(encodeURIComponent(text)));
 }
 
-export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
+export default function ExportSuite({ logs, weeklyMinutes, profiles, onRestore }: ExportSuiteProps) {
+  // ── Backup & Restore ──────────────────────────────────────────────────────
+  const exportBackup = async () => {
+    const backup = {
+      app: 'GeoAttendance',
+      version: BACKUP_VERSION,
+      exportedAt: new Date().toISOString(),
+      profiles,
+      logs,
+    };
+    const json = JSON.stringify(backup, null, 2);
+    const filename = `geoattendance-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    await saveAndShare(filename, 'application/json', btoa(unescape(encodeURIComponent(json))), json);
+  };
+
+  const importBackup = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(String(reader.result));
+        if (data.app !== 'GeoAttendance' || !Array.isArray(data.profiles) || !Array.isArray(data.logs)) {
+          alert('This file is not a valid GeoAttendance backup.');
+          return;
+        }
+        const ok = confirm(
+          `Restore backup from ${data.exportedAt?.slice(0, 10) ?? 'unknown date'}?\n` +
+          `${data.profiles.length} profile(s), ${data.logs.length} record(s).\n\n` +
+          'This REPLACES all current profiles and attendance history.');
+        if (!ok) return;
+        onRestore(data.profiles, data.logs);
+        alert('Backup restored successfully ✅');
+      } catch {
+        alert('Could not read this backup file — it may be corrupted.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const exportCSV = async () => {
     const header = 'Date,Profile,Check-In,Check-Out,Duration (min),Status,Attended\n';
     const rows = logs.map(l => {
@@ -189,6 +231,32 @@ export default function ExportSuite({ logs, weeklyMinutes }: ExportSuiteProps) {
       <div>
         <h2 className="text-xl font-bold text-heading">Export & Share</h2>
         <p className="text-sm text-sub">Download or share your attendance data</p>
+      </div>
+
+      {/* Backup & Restore — protects data from uninstall / phone change */}
+      <div className="card p-4">
+        <h3 className="font-semibold text-heading text-sm mb-1">Backup & Restore</h3>
+        <p className="text-xs text-sub mb-3">
+          Your data lives only on this phone. Export a backup regularly — restore it after
+          reinstalling or on a new device.
+        </p>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={exportBackup}
+            className="rounded-xl bg-teal-600 text-white px-4 py-2 text-sm font-medium hover:bg-teal-700 transition"
+          >
+            Export Backup
+          </button>
+          <label className="rounded-xl bg-slate-100 text-slate-700 border border-slate-200 px-4 py-2 text-sm font-medium hover:bg-slate-200 transition cursor-pointer dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700">
+            Import Backup
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={e => { const f = e.target.files?.[0]; if (f) importBackup(f); e.target.value = ''; }}
+            />
+          </label>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

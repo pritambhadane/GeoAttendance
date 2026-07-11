@@ -24,6 +24,7 @@ export function getProfiles(): LocationProfile[] {
     checkEvery: p.checkEvery ?? 5,
     markAbsentAfter: p.markAbsentAfter ?? 30,
     workingDays: p.workingDays ?? [1, 2, 3, 4, 5],
+    notificationsEnabled: p.notificationsEnabled ?? true,
   }));
 }
 

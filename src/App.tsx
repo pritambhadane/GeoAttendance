@@ -31,6 +31,7 @@ function AppContent() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [nowClock, setNowClock] = useState(() => new Date());
   const [showBatteryBanner, setShowBatteryBanner] = useState(false);
+  const [healthIssue, setHealthIssue] = useState<string | null>(null);
   const [onboardingDone, setOnboardingDone] = useState(() => isOnboardingComplete());
   const { theme, toggleTheme } = useTheme();
   const automation = useAutomation();
@@ -101,6 +102,40 @@ function AppContent() {
     return () => clearInterval(id);
   }, []);
 
+  // ── Tracking health: warn when something silently breaks tracking ────────
+  useEffect(() => {
+    if (!onboardingDone) return;
+    let cancelled = false;
+    const check = async () => {
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const geo = (window as any).Capacitor?.Plugins?.Geolocation;
+        if (geo) {
+          const perm = await geo.checkPermissions();
+          if (cancelled) return;
+          if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
+            setHealthIssue('Location permission is missing — automatic check-in cannot work. Open Settings → Apps → GeoAttendance → Permissions → Location → "Allow all the time".');
+            return;
+          }
+        }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const notif = (window as any).Capacitor?.Plugins?.LocalNotifications;
+        if (notif) {
+          const np = await notif.checkPermissions();
+          if (cancelled) return;
+          if (np.display === 'denied') {
+            setHealthIssue('Notifications are blocked — you will not see check-in/check-out alerts. Enable them in Settings → Apps → GeoAttendance → Notifications.');
+            return;
+          }
+        }
+        setHealthIssue(null);
+      } catch { /* health check is best-effort */ }
+    };
+    check();
+    const iv = setInterval(check, 60_000); // re-check every minute
+    return () => { cancelled = true; clearInterval(iv); };
+  }, [onboardingDone]);
+
   // ── Conditional render (after all hooks) ─────────────────────────────────
   if (!onboardingDone) {
     return <PermissionOnboarding onComplete={() => setOnboardingDone(true)} />;
@@ -138,7 +173,12 @@ function AppContent() {
         return (
           <AttendanceHistory
             logs={automation.logs}
+            profiles={automation.profiles}
             onClear={automation.clearLogs}
+            onAddManual={automation.addManualRecord}
+            onUpdateRecord={automation.updateRecord}
+            onDeleteRecord={automation.deleteRecord}
+            onMarkLeave={automation.markLeave}
           />
         );
       case 'export':
@@ -146,6 +186,8 @@ function AppContent() {
           <ExportSuite
             logs={automation.logs}
             weeklyMinutes={weeklyMinutes}
+            profiles={automation.profiles}
+            onRestore={automation.restoreBackup}
           />
         );
       case 'monthly':
@@ -161,6 +203,14 @@ function AppContent() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
 
       {/* Battery optimisation banner — shown once if not whitelisted */}
+      {healthIssue && (
+        <div className="bg-rose-50 border-b border-rose-200 dark:bg-rose-950/60 dark:border-rose-800 px-4 py-2.5 flex items-center gap-3">
+          <BatteryWarning className="h-5 w-5 text-rose-600 dark:text-rose-400 shrink-0" />
+          <p className="text-xs text-rose-800 dark:text-rose-300 flex-1 leading-snug">
+            <strong>Tracking problem:</strong> {healthIssue}
+          </p>
+        </div>
+      )}
       {showBatteryBanner && (
         <div className="bg-amber-50 border-b border-amber-200 dark:bg-amber-950/60 dark:border-amber-800 px-4 py-2.5 flex items-center gap-3">
           <BatteryWarning className="h-5 w-5 text-amber-600 dark:text-amber-400 shrink-0" />

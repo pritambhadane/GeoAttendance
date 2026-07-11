@@ -387,6 +387,7 @@ public class AttendanceForegroundService extends Service {
                 int markAbsentAfter = profile.optInt("markAbsentAfter", 30);
                 double expectedHrs  = profile.optDouble("expectedHoursPerDay", 8.0);
                 String color        = profile.optString("color", "#10b981");
+                boolean notifOn     = profile.optBoolean("notificationsEnabled", true);
 
                 int ciMins = toMinutes(checkInTime);
                 int coMins = toMinutes(checkOutTime);
@@ -439,7 +440,7 @@ public class AttendanceForegroundService extends Service {
                             logsChanged = true;
                             markProcessed(profileId, shiftDateStr, hadRealSessionToday ? reEntryKey : checkInTime);
                             exitDetectedAt.remove(profileId); // clear any lingering exit timer on re-entry
-                            sendEventNotification("✅ Checked In – " + profileName,
+                            if (notifOn) sendEventNotification("✅ Checked In – " + profileName,
                                     "Auto check-in at " + currentTimeStr);
                             Log.i(TAG, "CHECK-IN: " + profileName + " at " + currentTimeStr);
                         }
@@ -468,7 +469,7 @@ public class AttendanceForegroundService extends Service {
                                 markProcessed(profileId, logShiftDate, exitKey);
                                 // Record exit time so scheduler keeps GPS on for 30 min
                                 exitDetectedAt.put(profileId, now.getTimeInMillis());
-                                sendEventNotification("📍 Left Geofence – " + profileName,
+                                if (notifOn) sendEventNotification("📍 Left Geofence – " + profileName,
                                         "Check-out at " + currentTimeStr);
                                 Log.i(TAG, "CHECKOUT (exit): " + profileName + " at " + currentTimeStr);
                             }
@@ -495,7 +496,7 @@ public class AttendanceForegroundService extends Service {
                         logs = appendLog(logs, absentLog);
                         logsChanged = true;
                         markProcessed(profileId, shiftDateStr, "absent");
-                        sendEventNotification("⚠️ Marked Absent – " + profileName,
+                        if (notifOn) sendEventNotification("⚠️ Marked Absent – " + profileName,
                                 "No check-in recorded for " + shiftDateStr);
                         Log.i(TAG, "ABSENT: " + profileName + " on " + shiftDateStr);
                     }
@@ -530,7 +531,7 @@ public class AttendanceForegroundService extends Service {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject log = logs.getJSONObject(i);
                 if (!log.isNull("checkOut")) continue;
-                if ("absent".equals(log.optString("status"))) continue;
+                if (!isSessionStatus(log.optString("status"))) continue;
 
                 String profileId = log.getString("profileId");
                 int shiftLenMins = 480; // fallback: 8 h
@@ -587,7 +588,7 @@ public class AttendanceForegroundService extends Service {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status")))
+                        && isSessionStatus(l.optString("status")))
                     return true;
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
@@ -600,7 +601,7 @@ public class AttendanceForegroundService extends Service {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && date.equals(l.optString("date"))
-                        && !"absent".equals(l.optString("status")))
+                        && isSessionStatus(l.optString("status")))
                     return true;
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
@@ -624,7 +625,7 @@ public class AttendanceForegroundService extends Service {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status")))
+                        && isSessionStatus(l.optString("status")))
                     return l;
             }
         } catch (JSONException e) { Log.e(TAG, e.getMessage()); }
@@ -638,7 +639,7 @@ public class AttendanceForegroundService extends Service {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status"))) {
+                        && isSessionStatus(l.optString("status"))) {
                     long checkInMs   = isoToEpoch(l.getString("checkIn"));
                     long duration    = Math.round((now.getTimeInMillis() - checkInMs) / 60000.0);
                     long expectedMin = Math.round(expectedHrs * 60);
@@ -795,6 +796,7 @@ public class AttendanceForegroundService extends Service {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 String status = l.optString("status", "auto");
+                if ("leave".equals(status)) continue; // leave: neither present nor absent
 
                 // OPEN sessions count regardless of date — an overnight session
                 // that started yesterday is still "active" after midnight.
@@ -959,6 +961,11 @@ public class AttendanceForegroundService extends Service {
     private static String generateId() {
         return Long.toString(System.currentTimeMillis(), 36)
                 + UUID.randomUUID().toString().replace("-", "").substring(0, 9);
+    }
+
+    /** True for real attendance sessions; absent and leave markers are not sessions. */
+    private static boolean isSessionStatus(String status) {
+        return !"absent".equals(status) && !"leave".equals(status);
     }
 
     private static boolean arrayContains(JSONArray arr, int value) {

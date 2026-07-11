@@ -105,7 +105,7 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
       const day = dayMap.get(log.date);
       if (!day) continue;
       const dur = safeDuration(log.duration);
-      if (log.status !== 'absent') day.totalMinutes += dur;
+      if (log.status !== 'absent' && log.status !== 'leave') day.totalMinutes += dur;
       day.sessions += 1;
       if (log.attended) { day.attended = true; day.profiles.push(log.profileName); }
       else { day.absent = true; }
@@ -116,7 +116,7 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
     const attendedDays   = days.filter(d => d.attended && !d.absent);
     const absentDays     = days.filter(d => d.absent && !d.attended);
     const totalMinutes   = monthLogs
-      .filter(l => l.status !== 'absent')
+      .filter(l => l.status !== 'absent' && l.status !== 'leave')
       .reduce((s, l) => s + safeDuration(l.duration), 0);
     const avgDailyMinutes = workingDays.length > 0 ? totalMinutes / workingDays.length : 0;
 
@@ -132,7 +132,7 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
         });
       }
       const pb = profileMap.get(log.profileId)!;
-      if (log.status !== 'absent') pb.totalMinutes += safeDuration(log.duration);
+      if (log.status !== 'absent' && log.status !== 'leave') pb.totalMinutes += safeDuration(log.duration);
       pb.sessions += 1;
     }
     // Count attended/absent days at the day level (not log level) to avoid
@@ -214,7 +214,7 @@ export default function MonthlySummary({ logs }: MonthlySummaryProps) {
     const dowMinutes = [0,0,0,0,0,0,0];
     const dowCounts  = [0,0,0,0,0,0,0];
     for (const log of monthLogs) {
-      if (log.status === 'absent' || !log.date) continue;
+      if (log.status === 'absent' || log.status === 'leave' || !log.date) continue;
       const dow = new Date(log.date + 'T00:00:00').getDay();
       dowMinutes[dow] += safeDuration(log.duration);
       dowCounts[dow]  += 1;

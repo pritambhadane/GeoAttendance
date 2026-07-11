@@ -161,7 +161,7 @@ public class AttendancePlugin extends Plugin {
                 JSONObject l = logs.getJSONObject(i);
                 if (profileId.equals(l.optString("profileId"))
                         && l.isNull("checkOut")
-                        && !"absent".equals(l.optString("status"))) {
+                        && isSessionStatus(l.optString("status"))) {
                     call.reject("Already checked in");
                     return;
                 }
@@ -231,7 +231,7 @@ public class AttendancePlugin extends Plugin {
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (!l.isNull("checkOut")) continue;
-                if ("absent".equals(l.optString("status"))) continue;
+                if (!isSessionStatus(l.optString("status"))) continue;
                 // No date filter: an overnight session opened yesterday must
                 // still be closable after midnight.
                 if (profileId != null && !profileId.equals(l.optString("profileId"))) continue;
@@ -278,6 +278,11 @@ public class AttendancePlugin extends Plugin {
         } catch (JSONException e) {
             call.reject("manualCheckOut error: " + e.getMessage());
         }
+    }
+
+    /** True for real attendance sessions; absent and leave markers are not sessions. */
+    private static boolean isSessionStatus(String status) {
+        return !"absent".equals(status) && !"leave".equals(status);
     }
 
     // ── Battery optimisation exemption ────────────────────────────────────────

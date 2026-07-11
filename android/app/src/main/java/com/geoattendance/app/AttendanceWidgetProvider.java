@@ -43,6 +43,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
     static final String THEME_RAINBOW = "rainbow";
 
     static final String ACTION_TOGGLE_THEME = "com.geoattendance.app.WIDGET_TOGGLE_THEME";
+    static final String ACTION_REFRESH      = "com.geoattendance.app.WIDGET_REFRESH";
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
@@ -54,6 +55,9 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         super.onReceive(ctx, intent);
         if (ACTION_TOGGLE_THEME.equals(intent.getAction())) {
             toggleTheme(ctx);
+            refreshAll(ctx);
+        }
+        if (ACTION_REFRESH.equals(intent.getAction())) {
             refreshAll(ctx);
         }
     }
@@ -79,6 +83,17 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             PendingIntent togglePi = PendingIntent.getBroadcast(ctx, widgetId + 10000, toggle,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             views.setOnClickPendingIntent(getStatusId(size), togglePi);
+
+            // Tap the timestamp / GPS label → refresh the widget data
+            Intent refresh = new Intent(ctx, AttendanceWidgetProvider.class);
+            refresh.setAction(ACTION_REFRESH);
+            PendingIntent refreshPi = PendingIntent.getBroadcast(ctx, widgetId + 20000, refresh,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            if ("large".equals(size)) {
+                views.setOnClickPendingIntent(R.id.widget_large_updated, refreshPi);
+            } else if ("medium".equals(size)) {
+                views.setOnClickPendingIntent(R.id.widget_medium_gps, refreshPi);
+            }
 
             mgr.updateAppWidget(widgetId, views);
         } catch (Exception ignored) {}
@@ -223,10 +238,14 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             JSONArray logs = new JSONArray(raw);
 
             Set<String> attendedDates = new TreeSet<>(Collections.reverseOrder());
+            Set<String> leaveDates = new TreeSet<>();
             for (int i = 0; i < logs.length(); i++) {
                 JSONObject l = logs.getJSONObject(i);
                 if (l.optBoolean("attended", false)) {
                     attendedDates.add(l.optString("date", ""));
+                }
+                if ("leave".equals(l.optString("status"))) {
+                    leaveDates.add(l.optString("date", ""));
                 }
             }
             int streak = 0;
@@ -234,8 +253,12 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             SimpleDateFormat df2 = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault());
             df2.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
             for (int back = 0; back < 365; back++) {
-                if (attendedDates.contains(df2.format(cal.getTime()))) {
+                String ds = df2.format(cal.getTime());
+                if (attendedDates.contains(ds)) {
                     streak++;
+                    cal.add(Calendar.DAY_OF_YEAR, -1);
+                } else if (leaveDates.contains(ds)) {
+                    // Leave days don't break the streak — skip without counting
                     cal.add(Calendar.DAY_OF_YEAR, -1);
                 } else { break; }
             }
@@ -267,12 +290,13 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                     if (pname.length() > 8) pname = pname.substring(0, 8);
 
                     int totalMins   = 0;
-                    boolean present = false, absent = false, open = false;
+                    boolean present = false, absent = false, open = false, leave = false;
                     for (int li = 0; li < logs.length(); li++) {
                         JSONObject l = logs.getJSONObject(li);
                         if (!pid.equals(l.optString("profileId"))) continue;
                         if (!dateStr.equals(l.optString("date")))  continue;
                         if ("absent".equals(l.optString("status"))) { absent = true; continue; }
+                        if ("leave".equals(l.optString("status")))  { leave  = true; continue; }
                         present = true;
                         if (l.isNull("checkOut")) open = true;
                         else if (!l.isNull("duration")) totalMins += l.optInt("duration", 0);
@@ -284,6 +308,8 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                         row.append(pname).append(" ✓");
                         if (open) row.append("now");
                         else if (totalMins > 0) row.append(formatDuration(totalMins).replace(" ", ""));
+                    } else if (leave) {
+                        row.append(pname).append(" L");
                     } else if (absent) {
                         absentCnt++;
                         row.append(pname).append(" ✗");

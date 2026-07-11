@@ -40,6 +40,15 @@ function saveDedup(keys: Set<string>, currentDate: string): void {
 
 // ── Native sync helpers ──────────────────────────────────────────────────────
 
+async function syncLogsToNative(logs: AttendanceLog[]) {
+  if (!isNativeServiceAvailable()) return;
+  try {
+    await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(logs) });
+  } catch (e) {
+    console.warn('[GeoAttend] syncLogs failed:', e);
+  }
+}
+
 async function syncProfilesToNative(profiles: LocationProfile[]) {
   if (!isNativeServiceAvailable()) return;
   try {
@@ -166,7 +175,7 @@ export function useAutomation() {
 
   // ── Session helpers ──────────────────────────────────────────────────────
   const getOpenSessions = useCallback(() =>
-    logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent'), []);
+    logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent' && l.status !== 'leave'), []);
 
   const getTrackingStatus = useCallback((): TrackingStatus => {
     const now      = getCurrentTime();
@@ -175,11 +184,11 @@ export function useAutomation() {
     const nowDay   = now.getDay();
 
     // Open sessions are date-agnostic — overnight sessions stay visible after midnight
-    const open = logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent');
+    const open = logsRef.current.filter(l => l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
     if (open.length > 0) return 'checked-in';
 
     const todayLogs = logsRef.current.filter(l => l.date === todayStr);
-    const nonAbsent = todayLogs.filter(l => l.status !== 'absent');
+    const nonAbsent = todayLogs.filter(l => l.status !== 'absent' && l.status !== 'leave');
     if (nonAbsent.length > 0 && nonAbsent[nonAbsent.length - 1].checkOut) return 'checked-out';
 
     // 'tracking' = inside active scan window (GPS should be on) but not yet checked in
@@ -211,7 +220,7 @@ export function useAutomation() {
       const now = getCurrentTime();
       let updated = [...logsRef.current];
       let changed = false;
-      for (const log of updated.filter(l => l.checkOut === null && l.status !== 'absent')) {
+      for (const log of updated.filter(l => l.checkOut === null && l.status !== 'absent' && l.status !== 'leave')) {
         const profile = profiles.find(p => p.id === log.profileId);
         if (!profile) continue;
         const shiftLen = wrapMins(timeToMinutes(profile.checkOutTime) - timeToMinutes(profile.checkInTime)) || 480;
@@ -273,7 +282,7 @@ export function useAutomation() {
         const pOvernight = wrapMins(timeToMinutes(profile.checkOutTime) + 30) < wrapMins(timeToMinutes(profile.checkInTime) - 30);
         const pPostMid   = pOvernight && nowMins <= wrapMins(timeToMinutes(profile.checkOutTime) + 30);
         const pAnchorDay = pPostMid ? (nowDay + 6) % 7 : nowDay;
-        const pHasOpen   = logsRef.current.some(l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
+        const pHasOpen   = logsRef.current.some(l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
         if (!pHasOpen && profile.workingDays.length > 0 && !profile.workingDays.includes(pAnchorDay)) continue;
 
         const dist    = calculateDistance(coords.latitude, coords.longitude, profile.latitude, profile.longitude);
@@ -298,9 +307,9 @@ export function useAutomation() {
 
         // Open sessions are date-agnostic — overnight sessions survive midnight
         const hasOpen = updatedLogs.some(l =>
-          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
+          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
         const sessionCount = updatedLogs.filter(l =>
-          l.profileId === profile.id && l.date === shiftStr && l.status !== 'absent').length;
+          l.profileId === profile.id && l.date === shiftStr && l.status !== 'absent' && l.status !== 'leave').length;
         const inCheckInWindow = sessionCount > 0 ? inReEntryWindow : inFirstWindow;
 
         // ── AUTO CHECK-IN: geofence entry within window ─────────────────
@@ -322,12 +331,12 @@ export function useAutomation() {
             dedupRef.current.add(ciKey);
             saveDedup(dedupRef.current, nowStr);
             changed = true;
-            notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+            if (profile.notificationsEnabled) notifyCheckIn(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
           }
         }
 
         const openLog = updatedLogs.find(
-          l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent');
+          l => l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
 
         // NOTE: time-based scheduled checkout REMOVED — check-out is
         // triggered exclusively by geofence exit, per requirements.
@@ -347,7 +356,7 @@ export function useAutomation() {
               dedupRef.current.delete(pendingKey);
               saveDedup(dedupRef.current, nowStr);
               changed = true;
-              notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+              if (profile.notificationsEnabled) notifyGeofenceExit(profile.name, now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
             } else {
               dedupRef.current.add(pendingKey);
               saveDedup(dedupRef.current, nowStr);
@@ -374,7 +383,7 @@ export function useAutomation() {
             dedupRef.current.add(absentKey);
             saveDedup(dedupRef.current, nowStr);
             changed = true;
-            notifyAbsent(profile.name);
+            if (profile.notificationsEnabled) notifyAbsent(profile.name);
           }
         }
       }
@@ -405,7 +414,7 @@ export function useAutomation() {
         // Open sessions always keep the scheduler active (date-agnostic,
         // checked before the working-day filter — overnight-safe)
         if (logsRef.current.some(l =>
-          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent')) {
+          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave')) {
           hasOpen = true;
           inScanWindow = true;
         }
@@ -479,7 +488,7 @@ export function useAutomation() {
     startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
     return logsRef.current
-      .filter(l => new Date(l.checkIn) >= startOfWeek && l.status !== 'absent')
+      .filter(l => new Date(l.checkIn) >= startOfWeek && l.status !== 'absent' && l.status !== 'leave')
       .reduce((sum, l) => {
         if (l.duration !== null) return sum + l.duration;
         if (l.checkOut === null) return sum + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
@@ -491,9 +500,9 @@ export function useAutomation() {
     const now = getCurrentTime();
     const todayStr = dateToStr(now);
     const todayLogs = logsRef.current.filter(l => l.date === todayStr);
-    const open = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent');
+    const open = todayLogs.filter(l => l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
     const totalMinutes = todayLogs
-      .filter(l => l.status !== 'absent')
+      .filter(l => l.status !== 'absent' && l.status !== 'leave')
       .reduce((s, l) => {
         if (l.duration !== null) return s + l.duration;
         if (l.checkOut === null) return s + Math.max(0, (now.getTime() - new Date(l.checkIn).getTime()) / 60000);
@@ -503,8 +512,79 @@ export function useAutomation() {
   }, [getCurrentTime]);
 
   const clearLogs = useCallback(() => {
-    setLogs([]); logsRef.current = []; saveLogs([]);
+    setLogs([]); logsRef.current = []; saveLogs([]); syncLogsToNative([]);
   }, []);
+
+  // ── Manual record corrections ─────────────────────────────────────────────
+  const applyLogs = useCallback((updated: AttendanceLog[]) => {
+    setLogs(updated); logsRef.current = updated; saveLogs(updated); syncLogsToNative(updated);
+  }, []);
+
+  /** Add a manual attendance record (GPS missed a check-in, dead battery, etc.) */
+  const addManualRecord = useCallback((profileId: string, date: string, checkIn: string, checkOut: string | null) => {
+    const profile = profiles.find(p => p.id === profileId);
+    if (!profile) return;
+    const inISO  = `${date}T${checkIn}:00+05:30`;
+    const outISO = checkOut ? `${date}T${checkOut}:00+05:30` : null;
+    let duration: number | null = null;
+    if (outISO) {
+      duration = Math.max(0, Math.round((new Date(outISO).getTime() - new Date(inISO).getTime()) / 60000));
+      if (duration === 0) duration = null;
+    }
+    const expMins = profile.expectedHoursPerDay * 60;
+    const newLog: AttendanceLog = {
+      id: generateId(), profileId, profileName: profile.name, date,
+      checkIn: inISO, checkOut: outISO, duration,
+      status: 'manual', profileColor: profile.color,
+      attended: duration !== null ? duration >= expMins * 0.5 : true,
+    };
+    applyLogs([...logsRef.current, newLog]);
+  }, [profiles, applyLogs]);
+
+  /** Edit an existing record's times (marked as manual correction). */
+  const updateRecord = useCallback((logId: string, checkIn: string, checkOut: string | null) => {
+    const log = logsRef.current.find(l => l.id === logId);
+    if (!log) return;
+    const profile = profiles.find(p => p.id === log.profileId);
+    const inISO  = `${log.date}T${checkIn}:00+05:30`;
+    const outISO = checkOut ? `${log.date}T${checkOut}:00+05:30` : null;
+    let duration: number | null = null;
+    if (outISO) duration = Math.max(0, Math.round((new Date(outISO).getTime() - new Date(inISO).getTime()) / 60000));
+    const expMins = (profile?.expectedHoursPerDay ?? 8) * 60;
+    applyLogs(logsRef.current.map(l => l.id === logId
+      ? { ...l, checkIn: inISO, checkOut: outISO, duration,
+          status: 'manual' as const,
+          attended: duration !== null ? duration >= expMins * 0.5 : true }
+      : l));
+  }, [profiles, applyLogs]);
+
+  const deleteRecord = useCallback((logId: string) => {
+    applyLogs(logsRef.current.filter(l => l.id !== logId));
+  }, [applyLogs]);
+
+  /** Restore a full backup (profiles + logs), replacing current data. */
+  const restoreBackup = useCallback((newProfiles: LocationProfile[], newLogs: AttendanceLog[]) => {
+    setProfiles(newProfiles); saveProfiles(newProfiles); syncProfilesToNative(newProfiles);
+    applyLogs(newLogs);
+  }, [applyLogs]);
+
+  /** Mark a date as leave/holiday for a profile (or all profiles when profileId is null).
+   *  Leave blocks absent-marking on that date and doesn't break the streak. */
+  const markLeave = useCallback((date: string, profileId: string | null) => {
+    const targets = profileId ? profiles.filter(p => p.id === profileId) : profiles;
+    let updated = [...logsRef.current];
+    for (const p of targets) {
+      // Skip if any record already exists for this profile+date
+      if (updated.some(l => l.profileId === p.id && l.date === date)) continue;
+      updated = [...updated, {
+        id: generateId(), profileId: p.id, profileName: p.name, date,
+        checkIn: `${date}T${p.checkInTime}:00+05:30`,
+        checkOut: null, duration: null,
+        status: 'leave' as const, profileColor: p.color, attended: false,
+      }];
+    }
+    applyLogs(updated);
+  }, [profiles, applyLogs]);
 
   return {
     profiles, logs, simulation, currentPosition, positionError,
@@ -513,5 +593,6 @@ export function useAutomation() {
     addProfile, updateProfile, deleteProfile, toggleProfile,
     updateSimulation,
     getWeeklyHours, getTodayStatus, clearLogs,
+    addManualRecord, updateRecord, deleteRecord, markLeave, restoreBackup,
   };
 }
