@@ -29,14 +29,14 @@ workflows:
       - name: Capacitor sync
         script: npx cap sync android
 
-      - name: Install Gradle via Homebrew
-        script: brew install gradle
-
-      - name: Build debug APK using system Gradle
+      - name: Build debug APK using Gradle wrapper
         script: |
           cd android
-          # Use system gradle (brew) directly - avoids wrapper download entirely
-          gradle assembleDebug --no-daemon
+          # Use the project's Gradle wrapper (pinned to 8.14.3), which matches
+          # AGP 8.13. Brew's system Gradle is 9.6+ now and AGP 8.x is
+          # incompatible with it (Gradle removed an internal API in 9.6).
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
 
     artifacts:
       - android/app/build/outputs/apk/debug/app-debug.apk
