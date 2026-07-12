@@ -448,6 +448,36 @@ public class AttendanceForegroundService extends Service {
 
                 boolean hasOpenSession = hasOpenSession(logs, profileId);
 
+                // ── SHIFT-DAY ROLLOVER ───────────────────────────────────────
+                // If the PREVIOUS shift's session is still open when the NEXT
+                // shift's window arrives (user never left the fence), close the
+                // old session at its own shift end so the new day starts fresh.
+                // Prevents one giant multi-day record and a bogus absent mark.
+                // Normal late work is untouched: this only fires once the next
+                // shift's scan window has begun AND the session has already run
+                // past its full shift length.
+                if (hasOpenSession) {
+                    JSONObject prevOpen = findOpenLog(logs, profileId);
+                    if (prevOpen != null && !shiftDateStr.equals(prevOpen.optString("date"))) {
+                        int scanStartMins = wrapMins(ciMins - 30);
+                        if (inWrappedWindow(currentMinutes, scanStartMins, scanEndMins)) {
+                            long checkInEpoch = isoToEpoch(prevOpen.getString("checkIn"));
+                            int shiftLen = wrapMins(coMins - ciMins);
+                            if (shiftLen == 0) shiftLen = 480;
+                            long elapsedMins = (now.getTimeInMillis() - checkInEpoch) / 60_000;
+                            if (elapsedMins > shiftLen) {
+                                Calendar capAt = Calendar.getInstance(IST);
+                                capAt.setTimeInMillis(Math.min(now.getTimeInMillis(),
+                                        checkInEpoch + shiftLen * 60_000L));
+                                logs = closeOpenSession(logs, profileId, capAt, expectedHrs);
+                                logsChanged = true;
+                                hasOpenSession = false;
+                                Log.i(TAG, "ROLLOVER: capped " + profileName + "'s previous-day session at shift end");
+                            }
+                        }
+                    }
+                }
+
                 // Working-day filter uses the shift's anchor day, and NEVER
                 // skips a profile that has an open session (so an overnight
                 // session can still be checked out after midnight).

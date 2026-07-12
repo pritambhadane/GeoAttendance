@@ -307,6 +307,26 @@ export function useAutomation() {
         const inFirstWindow   = inWrappedWindow(nowMins, windowStart, windowEnd);
         const inReEntryWindow = inWrappedWindow(nowMins, windowStart, wrapMins(coMins));
 
+        // ── Shift-day rollover: previous shift's session still open when
+        // the new shift's window arrives → cap it at its own shift end so
+        // today starts a fresh session (prevents giant multi-day records
+        // and bogus absent marks). Late work on the same shift is untouched.
+        const prevOpen = updatedLogs.find(l =>
+          l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
+        if (prevOpen && prevOpen.date !== shiftStr
+            && inWrappedWindow(nowMins, wrapMins(ciMins - 30), scanEnd)) {
+          const shiftLen = wrapMins(coMins - ciMins) || 480;
+          const elapsed = safeDuration(now.getTime() - new Date(prevOpen.checkIn).getTime());
+          if (elapsed > shiftLen) {
+            const capAt = new Date(Math.min(now.getTime(),
+              new Date(prevOpen.checkIn).getTime() + shiftLen * 60000));
+            updatedLogs = updatedLogs.map(l => l.id === prevOpen.id
+              ? { ...l, checkOut: capAt.toISOString(), duration: shiftLen, attended: shiftLen >= expMins * 0.5 }
+              : l);
+            changed = true;
+          }
+        }
+
         // Open sessions are date-agnostic — overnight sessions survive midnight
         const hasOpen = updatedLogs.some(l =>
           l.profileId === profile.id && l.checkOut === null && l.status !== 'absent' && l.status !== 'leave');
