@@ -4,7 +4,7 @@ workflows:
     max_build_duration: 60
     environment:
       node: 22.12.0
-      java: 17
+      java: 21
     scripts:
       - name: Pin Capacitor to 6.x and install dependencies
         script: |
