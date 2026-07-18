@@ -31,6 +31,7 @@ function AppContent() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [nowClock, setNowClock] = useState(() => new Date());
   const [showBatteryBanner, setShowBatteryBanner] = useState(false);
+  const [showAutostartBanner, setShowAutostartBanner] = useState(false);
   const [healthIssue, setHealthIssue] = useState<string | null>(null);
   const [onboardingDone, setOnboardingDone] = useState(() => isOnboardingComplete());
   const { theme, toggleTheme } = useTheme();
@@ -93,6 +94,18 @@ function AppContent() {
     };
 
     const t = setTimeout(checkBattery, 3000);
+    return () => clearTimeout(t);
+  }, [onboardingDone]);
+
+  // ── Autostart prompt (Xiaomi/HyperOS) — shown once, dismissible ──────────
+  // HyperOS kills background services when the screen locks unless Autostart
+  // is enabled for the app. Android has no API to detect that setting, so we
+  // guide the user there once and remember that we asked.
+  useEffect(() => {
+    if (!onboardingDone) return;
+    if (!isNativeServiceAvailable()) return;
+    if (localStorage.getItem('geoattend_autostart_prompted') === 'yes') return;
+    const t = setTimeout(() => setShowAutostartBanner(true), 5000);
     return () => clearTimeout(t);
   }, [onboardingDone]);
 
@@ -209,6 +222,34 @@ function AppContent() {
           <p className="text-xs text-rose-800 dark:text-rose-300 flex-1 leading-snug">
             <strong>Tracking problem:</strong> {healthIssue}
           </p>
+        </div>
+      )}
+      {showAutostartBanner && (
+        <div className="bg-sky-50 border-b border-sky-200 dark:bg-sky-950/60 dark:border-sky-800 px-4 py-2.5 flex items-center gap-3">
+          <BatteryWarning className="h-5 w-5 text-sky-600 dark:text-sky-400 shrink-0" />
+          <p className="text-xs text-sky-800 dark:text-sky-300 flex-1 leading-snug">
+            <strong>Enable Autostart</strong> so tracking survives screen lock on this phone. On the next screen, find GeoAttendance and switch Autostart ON.
+          </p>
+          <button
+            onClick={async () => {
+              localStorage.setItem('geoattend_autostart_prompted', 'yes');
+              setShowAutostartBanner(false);
+              try { await AttendanceServicePlugin.openAutostartSettings(); } catch { /* best-effort */ }
+            }}
+            className="text-xs font-semibold text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900 px-3 py-1 rounded-lg shrink-0 hover:bg-sky-200 dark:hover:bg-sky-800 transition"
+          >
+            Open settings
+          </button>
+          <button
+            onClick={() => {
+              localStorage.setItem('geoattend_autostart_prompted', 'yes');
+              setShowAutostartBanner(false);
+            }}
+            className="p-1 text-sky-500 hover:text-sky-700 dark:hover:text-sky-300"
+            title="Dismiss"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
       {showBatteryBanner && (

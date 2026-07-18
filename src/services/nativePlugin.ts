@@ -155,4 +155,16 @@ export const AttendanceServicePlugin = {
     if (!p) return { alreadyExempted: true };
     return p.requestBatteryExemption();
   },
+
+  /**
+   * Open the OEM Autostart management screen (Xiaomi/HyperOS/MIUI).
+   * Falls back to the App Info page on other devices.
+   * There is no API to check whether Autostart is enabled — we can only
+   * take the user to the right screen and explain what to switch on.
+   */
+  async openAutostartSettings(): Promise<{ opened: boolean; fallback?: boolean }> {
+    const p = getPlugin();
+    if (!p) return { opened: false };
+    return p.openAutostartSettings();
+  },
 };

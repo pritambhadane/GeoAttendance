@@ -59,6 +59,9 @@ public class AttendancePlugin extends Plugin {
     @PluginMethod
     public void stopService(PluginCall call) {
         try {
+            // User intentionally stopped tracking — stop the watchdog too,
+            // otherwise it would silently restart the service in 15 minutes.
+            WatchdogReceiver.cancel(getContext());
             Intent intent = new Intent(getContext(), AttendanceForegroundService.class);
             getContext().stopService(intent);
             Log.i(TAG, "stopService called from JS");
@@ -336,6 +339,50 @@ public class AttendancePlugin extends Plugin {
             JSObject ret = new JSObject();
             ret.put("alreadyExempted", true); // not applicable below API 23
             call.resolve(ret);
+        }
+    }
+
+    /**
+     * Open the OEM "Autostart" management screen (Xiaomi/HyperOS/MIUI).
+     * On HyperOS a foreground service will NOT survive screen-lock kills
+     * unless the user enables Autostart for this app — there is no API to
+     * check or request it, so the best we can do is deep-link the screen.
+     * Falls back to the standard App Info page on non-Xiaomi devices.
+     * Returns: { opened: boolean, fallback?: boolean }
+     */
+    @PluginMethod
+    public void openAutostartSettings(PluginCall call) {
+        // Known Xiaomi/HyperOS autostart management activities
+        String[][] targets = {
+            {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity"},
+            {"com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartDetailManagementActivity"},
+        };
+        for (String[] t : targets) {
+            try {
+                Intent intent = new Intent();
+                intent.setClassName(t[0], t[1]);
+                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+                Log.i(TAG, "Opened autostart screen: " + t[1]);
+                JSObject ret = new JSObject();
+                ret.put("opened", true);
+                call.resolve(ret);
+                return;
+            } catch (Exception ignored) { /* try next target */ }
+        }
+        // Fallback: standard App Info page (Autostart toggle lives there too on HyperOS)
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            Log.i(TAG, "Opened app-info fallback for autostart");
+            JSObject ret = new JSObject();
+            ret.put("opened", true);
+            ret.put("fallback", true);
+            call.resolve(ret);
+        } catch (Exception e) {
+            call.reject("Could not open settings: " + e.getMessage());
         }
     }
 }

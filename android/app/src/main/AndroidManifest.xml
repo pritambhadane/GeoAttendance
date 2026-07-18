@@ -68,6 +68,11 @@
             </intent-filter>
         </receiver>
 
+        <!-- ── NEW: Watchdog receiver — alarm-driven revive if OS kills service ── -->
+        <receiver
+            android:name=".WatchdogReceiver"
+            android:exported="false" />
+
         <!-- Restores scheduled notifications after phone reboot -->
         <receiver
             android:name="com.capacitorjs.plugins.localnotifications.LocalNotificationRestoreReceiver"

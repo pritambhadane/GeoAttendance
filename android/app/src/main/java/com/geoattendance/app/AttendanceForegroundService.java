@@ -133,6 +133,9 @@ public class AttendanceForegroundService extends Service {
                 sendEventNotification("⚠️ GeoAttend — action required",
                         "Location permission missing. Open the app and grant \"Allow all the time\".");
             } catch (Exception ignored) { /* POST_NOTIFICATIONS may also be missing */ }
+            // Stop the watchdog chain — retrying every 15 min without the
+            // location permission would only spam the same warning.
+            WatchdogReceiver.cancel(this);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -145,6 +148,9 @@ public class AttendanceForegroundService extends Service {
 
         // Start the smart scheduler — it will decide when to start/stop GPS
         scheduleNext(true);
+
+        // Arm the watchdog alarm so we get revived if HyperOS kills the service
+        WatchdogReceiver.schedule(this);
 
         if (isBootStart) {
             JSONArray profiles = getProfiles();
@@ -167,6 +173,15 @@ public class AttendanceForegroundService extends Service {
         stopGPS();
         if (tickRunnable != null) handler.removeCallbacks(tickRunnable);
         super.onDestroy();
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // User swiped the app away from recents — HyperOS often kills the
+        // service right after. Arm a fast watchdog to bring it back in ~5 s.
+        Log.i(TAG, "Task removed — arming fast watchdog revive");
+        WatchdogReceiver.scheduleSoon(this, 5_000);
+        super.onTaskRemoved(rootIntent);
     }
 
     @Nullable @Override
