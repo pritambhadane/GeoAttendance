@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   HAS_KEYSTORE: ${{ secrets.RELEASE_KEYSTORE_BASE64 != '' }}
@@ -75,4 +76,16 @@ jobs:
         with:
           name: geoattendance-apk
           path: /tmp/geoattendance.apk
-          retention-days: 14
+          retention-days: 7
+
+      - name: Trim old artifacts (keep newest 5)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[5:] | .[].id' \
+          | while read -r id; do
+              [ -n "$id" ] && gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" || true
+            done
