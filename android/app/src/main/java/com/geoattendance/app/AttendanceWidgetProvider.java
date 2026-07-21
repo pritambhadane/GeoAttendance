@@ -67,18 +67,28 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
     static final int COLOR_LEAVE   = 0xFF9EC9FF;  // blue
     static final int COLOR_NONE    = 0x66FFFFFF;  // faint
 
-    // Medium (4x2) widget: per-profile group cards, up to 4 profiles x 3 days
+    // Medium (4x2) widget: per-profile mini-tables, up to 4 profiles x 3 rows x 5 cols
     static final int[] MED_CARD_IDS = {
             R.id.widget_medium_p1_card, R.id.widget_medium_p2_card,
             R.id.widget_medium_p3_card, R.id.widget_medium_p4_card };
     static final int[] MED_NAME_IDS = {
             R.id.widget_medium_p1_name, R.id.widget_medium_p2_name,
             R.id.widget_medium_p3_name, R.id.widget_medium_p4_name };
-    static final int[][] MED_DAY_IDS = {
-            { R.id.widget_medium_p1_d1, R.id.widget_medium_p1_d2, R.id.widget_medium_p1_d3 },
-            { R.id.widget_medium_p2_d1, R.id.widget_medium_p2_d2, R.id.widget_medium_p2_d3 },
-            { R.id.widget_medium_p3_d1, R.id.widget_medium_p3_d2, R.id.widget_medium_p3_d3 },
-            { R.id.widget_medium_p4_d1, R.id.widget_medium_p4_d2, R.id.widget_medium_p4_d3 } };
+    // MED_CELL_IDS[profile][row][col]  (col: 0=date,1=in,2=out,3=dur,4=status)
+    static final int[][][] MED_CELL_IDS = {
+        { { R.id.widget_medium_p1_r1_c1, R.id.widget_medium_p1_r1_c2, R.id.widget_medium_p1_r1_c3, R.id.widget_medium_p1_r1_c4, R.id.widget_medium_p1_r1_c5 },
+          { R.id.widget_medium_p1_r2_c1, R.id.widget_medium_p1_r2_c2, R.id.widget_medium_p1_r2_c3, R.id.widget_medium_p1_r2_c4, R.id.widget_medium_p1_r2_c5 },
+          { R.id.widget_medium_p1_r3_c1, R.id.widget_medium_p1_r3_c2, R.id.widget_medium_p1_r3_c3, R.id.widget_medium_p1_r3_c4, R.id.widget_medium_p1_r3_c5 } },
+        { { R.id.widget_medium_p2_r1_c1, R.id.widget_medium_p2_r1_c2, R.id.widget_medium_p2_r1_c3, R.id.widget_medium_p2_r1_c4, R.id.widget_medium_p2_r1_c5 },
+          { R.id.widget_medium_p2_r2_c1, R.id.widget_medium_p2_r2_c2, R.id.widget_medium_p2_r2_c3, R.id.widget_medium_p2_r2_c4, R.id.widget_medium_p2_r2_c5 },
+          { R.id.widget_medium_p2_r3_c1, R.id.widget_medium_p2_r3_c2, R.id.widget_medium_p2_r3_c3, R.id.widget_medium_p2_r3_c4, R.id.widget_medium_p2_r3_c5 } },
+        { { R.id.widget_medium_p3_r1_c1, R.id.widget_medium_p3_r1_c2, R.id.widget_medium_p3_r1_c3, R.id.widget_medium_p3_r1_c4, R.id.widget_medium_p3_r1_c5 },
+          { R.id.widget_medium_p3_r2_c1, R.id.widget_medium_p3_r2_c2, R.id.widget_medium_p3_r2_c3, R.id.widget_medium_p3_r2_c4, R.id.widget_medium_p3_r2_c5 },
+          { R.id.widget_medium_p3_r3_c1, R.id.widget_medium_p3_r3_c2, R.id.widget_medium_p3_r3_c3, R.id.widget_medium_p3_r3_c4, R.id.widget_medium_p3_r3_c5 } },
+        { { R.id.widget_medium_p4_r1_c1, R.id.widget_medium_p4_r1_c2, R.id.widget_medium_p4_r1_c3, R.id.widget_medium_p4_r1_c4, R.id.widget_medium_p4_r1_c5 },
+          { R.id.widget_medium_p4_r2_c1, R.id.widget_medium_p4_r2_c2, R.id.widget_medium_p4_r2_c3, R.id.widget_medium_p4_r2_c4, R.id.widget_medium_p4_r2_c5 },
+          { R.id.widget_medium_p4_r3_c1, R.id.widget_medium_p4_r3_c2, R.id.widget_medium_p4_r3_c3, R.id.widget_medium_p4_r3_c4, R.id.widget_medium_p4_r3_c5 } }
+    };
 
     @Override
     public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
@@ -196,14 +206,17 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                 v.setTextViewText(R.id.widget_medium_status,  d.statusLabel + " \u00b7 " + d.streak + "d streak");
                 v.setTextViewText(R.id.widget_medium_updated, "Updated: " + d.updatedAt);
                 v.setTextViewText(R.id.widget_medium_gps,     d.locLine);
-                // Per-profile group cards, up to 4 profiles x last 3 days
+                // Per-profile mini-tables, up to 4 profiles x 3 rows x 5 cols (date/in/out/dur/status)
                 for (int pi = 0; pi < MED_CARD_IDS.length; pi++) {
                     if (pi < d.medProfileCount) {
                         v.setViewVisibility(MED_CARD_IDS[pi], android.view.View.VISIBLE);
                         v.setTextViewText(MED_NAME_IDS[pi], d.medProfileName[pi]);
-                        for (int day = 0; day < 3; day++) {
-                            v.setTextViewText(MED_DAY_IDS[pi][day], d.medDayLine[pi][day]);
-                            v.setTextColor(MED_DAY_IDS[pi][day], d.medDayColor[pi][day]);
+                        for (int row = 0; row < 3; row++) {
+                            for (int col = 0; col < 4; col++) {
+                                v.setTextViewText(MED_CELL_IDS[pi][row][col], d.medCell[pi][row][col]);
+                            }
+                            v.setTextViewText(MED_CELL_IDS[pi][row][4], d.medStatusText[pi][row]);
+                            v.setTextColor(MED_CELL_IDS[pi][row][4], d.medStatusColor[pi][row]);
                         }
                     } else {
                         v.setViewVisibility(MED_CARD_IDS[pi], android.view.View.GONE);
@@ -420,9 +433,12 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
             d.historyLine = compact.toString();
             d.tableRowCount = tRow;
 
-            // ── Per-profile groups (medium widget): profile-major, day-minor ──
+            // ── Per-profile mini-tables (medium widget): profile-major, day-minor ──
             int medCount = Math.min(profiles.length(), MED_CARD_IDS.length);
             d.medProfileCount = medCount;
+            SimpleDateFormat shortDateLbl = new SimpleDateFormat("EEEdd", Locale.getDefault());
+            shortDateLbl.setTimeZone(TimeZone.getTimeZone("Asia/Kolkata"));
+
             for (int pi = 0; pi < medCount; pi++) {
                 JSONObject prof = profiles.getJSONObject(pi);
                 String pid   = prof.optString("id", "");
@@ -431,8 +447,8 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
 
                 Calendar mCal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"));
                 for (int back = 0; back < 3; back++) {
-                    String dateStr = df2.format(mCal.getTime());
-                    String label   = (back == 0) ? "Today" : dayLbl.format(mCal.getTime());
+                    String dateStr  = df2.format(mCal.getTime());
+                    String dateCell = (back == 0) ? "Today" : shortDateLbl.format(mCal.getTime());
 
                     boolean present = false, absent = false, leave = false, open = false;
                     int totalMins = 0;
@@ -459,42 +475,29 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                         }
                     }
 
-                    String line; int color;
-                    if (open) {
-                        String inS = (earliestIn != Long.MAX_VALUE) ? timeFmt.format(new Date(earliestIn)) : "--:--";
-                        line  = label + "  " + inS + "-now";
-                        color = COLOR_ACTIVE;
-                    } else if (present) {
-                        String inS  = (earliestIn != Long.MAX_VALUE) ? timeFmt.format(new Date(earliestIn)) : "--:--";
-                        String outS = (latestOut  != Long.MIN_VALUE) ? timeFmt.format(new Date(latestOut))  : "--:--";
-                        line  = label + "  " + inS + "-" + outS + "  " + formatDuration(totalMins).replace(" ", "");
-                        color = COLOR_PRESENT;
-                    } else if (leave) {
-                        line  = label + "  Leave";
-                        color = COLOR_LEAVE;
-                    } else if (absent) {
-                        line  = label + "  Absent";
-                        color = COLOR_ABSENT;
-                    } else {
-                        line  = label + "  --";
-                        color = COLOR_NONE;
-                    }
-                    d.medDayLine[pi][back]  = line;
-                    d.medDayColor[pi][back] = color;
+                    String inCell  = (earliestIn != Long.MAX_VALUE) ? timeFmt.format(new Date(earliestIn)) : "--";
+                    String outCell = open ? "\u2026"
+                            : (latestOut != Long.MIN_VALUE ? timeFmt.format(new Date(latestOut)) : "--");
+                    String durCell = (totalMins > 0) ? formatDuration(totalMins).replace(" ", "") : "--";
+                    String stText; int stColor;
+                    if (open)          { stText = "\u2026"; stColor = COLOR_ACTIVE;  }
+                    else if (present)  { stText = "P";       stColor = COLOR_PRESENT; }
+                    else if (leave)    { stText = "L";       stColor = COLOR_LEAVE;   }
+                    else if (absent)   { stText = "A";       stColor = COLOR_ABSENT;  }
+                    else               { stText = "-";       stColor = COLOR_NONE;    }
+
+                    if (!present && !open) { inCell = "--"; outCell = "--"; }
+                    if (absent || leave || (!present && !open)) durCell = "--";
+
+                    d.medCell[pi][back][0] = dateCell;
+                    d.medCell[pi][back][1] = inCell;
+                    d.medCell[pi][back][2] = outCell;
+                    d.medCell[pi][back][3] = durCell;
+                    d.medStatusText[pi][back]  = stText;
+                    d.medStatusColor[pi][back] = stColor;
 
                     mCal.add(Calendar.DAY_OF_YEAR, -1);
                 }
-            }
-            if (tRow == 0) {
-                // No records at all — show a single placeholder row
-                d.tableCells[0][0] = "Today";
-                d.tableCells[0][1] = "--";
-                d.tableCells[0][2] = "--:--";
-                d.tableCells[0][3] = "--:--";
-                d.tableCells[0][4] = "--";
-                d.tableCells[0][5] = "No data";
-                d.tableStatusColor[0] = COLOR_NONE;
-                d.tableRowCount = 1;
             }
 
         } catch (Exception ignored) {}
@@ -564,10 +567,11 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
         String[][] tableCells     = new String[9][6];
         int[]      tableStatusColor = new int[9];
         int        tableRowCount  = 0;
-        // Per-profile groups for the medium (4x2) widget: up to 4 profiles x 3 days
-        String[]   medProfileName = new String[4];
-        String[][] medDayLine     = new String[4][3];
-        int[][]    medDayColor    = new int[4][3];
-        int        medProfileCount = 0;
+        // Per-profile mini-tables for the medium (4x2) widget: up to 4 profiles x 3 rows x 4 cols (date/in/out/dur)
+        String[]     medProfileName = new String[4];
+        String[][][] medCell        = new String[4][3][4];
+        String[][]   medStatusText  = new String[4][3];
+        int[][]      medStatusColor = new int[4][3];
+        int          medProfileCount = 0;
     }
 }
