@@ -86,11 +86,14 @@ export const AttendanceServicePlugin = {
   },
 
   /**
-   * Seed Java's log store from React's localStorage.
-   * Call ONCE on first launch to migrate existing data.
-   * After this, Java is the authoritative writer.
+   * Push React's log list into Java's store.
+   *
+   * By default this MERGES: entries the native service recorded while the app
+   * was closed are preserved. Pass `replace: true` ONLY when React is genuinely
+   * authoritative (clear-all, backup restore, manual record edit) — that wipes
+   * the native store.
    */
-  syncLogs(opts: { logs: string }): Promise<void> {
+  syncLogs(opts: { logs: string; replace?: boolean }): Promise<void> {
     const p = getPlugin();
     if (!p) return Promise.resolve();
     return p.syncLogs(opts);

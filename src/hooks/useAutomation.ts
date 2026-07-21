@@ -40,10 +40,17 @@ function saveDedup(keys: Set<string>, currentDate: string): void {
 
 // ── Native sync helpers ──────────────────────────────────────────────────────
 
-async function syncLogsToNative(logs: AttendanceLog[]) {
+/**
+ * Push logs to the native store.
+ *
+ * `replace` must be true only when the user's action makes React authoritative
+ * (clear all, restore backup, edit/delete a record). Otherwise we merge, so the
+ * entries the background service wrote while the app was closed survive.
+ */
+async function syncLogsToNative(logs: AttendanceLog[], replace = false) {
   if (!isNativeServiceAvailable()) return;
   try {
-    await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(logs) });
+    await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(logs), replace });
   } catch (e) {
     console.warn('[GeoAttend] syncLogs failed:', e);
   }
@@ -534,12 +541,12 @@ export function useAutomation() {
   }, [getCurrentTime]);
 
   const clearLogs = useCallback(() => {
-    setLogs([]); logsRef.current = []; saveLogs([]); syncLogsToNative([]);
+    setLogs([]); logsRef.current = []; saveLogs([]); syncLogsToNative([], true);
   }, []);
 
   // ── Manual record corrections ─────────────────────────────────────────────
   const applyLogs = useCallback((updated: AttendanceLog[]) => {
-    setLogs(updated); logsRef.current = updated; saveLogs(updated); syncLogsToNative(updated);
+    setLogs(updated); logsRef.current = updated; saveLogs(updated); syncLogsToNative(updated, true);
   }, []);
 
   /** Add a manual attendance record (GPS missed a check-in, dead battery, etc.) */

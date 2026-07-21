@@ -66,6 +66,9 @@ function AppContent() {
     const bootstrap = async () => {
       try {
         await AttendanceServicePlugin.syncProfiles({ profiles: JSON.stringify(getProfiles()) });
+        // MERGE (no `replace`) — React's copy is stale on launch because the
+        // background service records sessions while the app is closed. A blind
+        // overwrite here previously destroyed those entries.
         await AttendanceServicePlugin.syncLogs({ logs: JSON.stringify(getLogs()) });
         await AttendanceServicePlugin.startService();
         console.log('[GeoAttend] Native ForegroundService started');

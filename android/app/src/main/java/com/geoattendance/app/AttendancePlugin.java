@@ -88,13 +88,60 @@ public class AttendancePlugin extends Plugin {
     @PluginMethod
     public void syncLogs(PluginCall call) {
         String logsJson = call.getString("logs", "[]");
-        getContext()
-                .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE)
-                .edit()
-                .putString("logs", logsJson)
-                .apply();
-        Log.i(TAG, "Logs seeded into SharedPreferences from React");
-        call.resolve();
+        // `replace=true` means the caller is authoritative (user cleared logs,
+        // restored a backup, or edited records) and the native store must be
+        // overwritten. Default is FALSE: merge, never destroy native entries.
+        boolean replace = Boolean.TRUE.equals(call.getBoolean("replace", false));
+
+        SharedPreferences prefs = getContext()
+                .getSharedPreferences(AttendanceForegroundService.PREFS_LOGS, Context.MODE_PRIVATE);
+
+        if (replace) {
+            prefs.edit().putString("logs", logsJson).apply();
+            Log.i(TAG, "Logs REPLACED in SharedPreferences from React (authoritative)");
+            call.resolve();
+            return;
+        }
+
+        try {
+            JSONArray incoming = new JSONArray(logsJson);
+            JSONArray existing = new JSONArray(prefs.getString("logs", "[]"));
+
+            // Index the incoming (React) entries by id.
+            java.util.LinkedHashMap<String, JSONObject> byId = new java.util.LinkedHashMap<>();
+            for (int i = 0; i < incoming.length(); i++) {
+                JSONObject l = incoming.getJSONObject(i);
+                String id = l.optString("id", "");
+                if (!id.isEmpty()) byId.put(id, l);
+            }
+
+            // Fold in the native entries. Native wins whenever it holds a more
+            // complete record (a closed session beats an still-open duplicate),
+            // and native-only entries are always preserved.
+            for (int i = 0; i < existing.length(); i++) {
+                JSONObject nat = existing.getJSONObject(i);
+                String id = nat.optString("id", "");
+                if (id.isEmpty()) continue;
+                JSONObject react = byId.get(id);
+                if (react == null) {
+                    byId.put(id, nat);                       // native-only → keep
+                } else if (react.isNull("checkOut") && !nat.isNull("checkOut")) {
+                    byId.put(id, nat);                       // native closed it → keep native
+                }
+            }
+
+            JSONArray merged = new JSONArray();
+            for (JSONObject l : byId.values()) merged.put(l);
+
+            prefs.edit().putString("logs", merged.toString()).apply();
+            Log.i(TAG, "Logs MERGED: react=" + incoming.length()
+                    + " native=" + existing.length() + " result=" + merged.length());
+            call.resolve();
+        } catch (JSONException e) {
+            // Never destroy native data because of a parse problem.
+            Log.e(TAG, "syncLogs merge failed, native store left untouched", e);
+            call.resolve();
+        }
     }
 
     // ── Read state / logs ─────────────────────────────────────────────────────
