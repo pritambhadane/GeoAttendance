@@ -87,34 +87,34 @@ export default function AttendanceHistory({
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+      <div className="space-y-3">
         <div>
           <h2 className="text-xl font-bold text-heading">Attendance History</h2>
           <p className="text-sm text-sub">{logs.length} log entries</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => { setFormMode(formMode === 'add' ? null : 'add'); setFProfile(profiles[0]?.id ?? ''); }}
-            className="rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 text-sm font-medium hover:bg-indigo-100 transition flex items-center gap-1 dark:bg-indigo-950 dark:text-indigo-300 dark:border-indigo-800 dark:hover:bg-indigo-900"
+            className="rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200 px-3 py-1.5 text-sm font-medium hover:bg-indigo-100 transition flex items-center gap-1 whitespace-nowrap shrink-0 dark:bg-indigo-950 dark:text-indigo-300 dark:border-indigo-800 dark:hover:bg-indigo-900"
           >
             <Plus className="h-3.5 w-3.5" /> Add Record
           </button>
           <button
             onClick={() => { setFormMode(formMode === 'leave' ? null : 'leave'); setFProfile(''); }}
-            className="rounded-xl bg-sky-50 text-sky-600 border border-sky-200 px-3 py-1.5 text-sm font-medium hover:bg-sky-100 transition flex items-center gap-1 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800 dark:hover:bg-sky-900"
+            className="rounded-xl bg-sky-50 text-sky-600 border border-sky-200 px-3 py-1.5 text-sm font-medium hover:bg-sky-100 transition flex items-center gap-1 whitespace-nowrap shrink-0 dark:bg-sky-950 dark:text-sky-300 dark:border-sky-800 dark:hover:bg-sky-900"
           >
             <Plane className="h-3.5 w-3.5" /> Mark Leave
           </button>
           <button
             onClick={() => { setFormMode(formMode === 'absent' ? null : 'absent'); setFProfile(''); }}
-            className="rounded-xl bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 text-sm font-medium hover:bg-rose-100 transition flex items-center gap-1 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800 dark:hover:bg-rose-900"
+            className="rounded-xl bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 text-sm font-medium hover:bg-rose-100 transition flex items-center gap-1 whitespace-nowrap shrink-0 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800 dark:hover:bg-rose-900"
           >
             <UserX className="h-3.5 w-3.5" /> Mark Absent
           </button>
         {logs.length > 0 && (
           <button
             onClick={onClear}
-            className="rounded-xl bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 text-sm font-medium hover:bg-rose-100 transition dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800 dark:hover:bg-rose-900"
+            className="rounded-xl bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 text-sm font-medium hover:bg-rose-100 transition whitespace-nowrap shrink-0 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800 dark:hover:bg-rose-900"
           >
             Clear All
           </button>
