@@ -615,6 +615,23 @@ export function useAutomation() {
     applyLogs(updated);
   }, [profiles, applyLogs]);
 
+  /** Manually mark a date as absent for a profile (or all profiles when profileId is null).
+   *  Skips any profile that already has a record on that date. */
+  const markAbsent = useCallback((date: string, profileId: string | null) => {
+    const targets = profileId ? profiles.filter(p => p.id === profileId) : profiles;
+    let updated = [...logsRef.current];
+    for (const p of targets) {
+      if (updated.some(l => l.profileId === p.id && l.date === date)) continue;
+      updated = [...updated, {
+        id: generateId(), profileId: p.id, profileName: p.name, date,
+        checkIn: `${date}T${p.checkInTime}:00+05:30`,
+        checkOut: null, duration: null,
+        status: 'absent' as const, profileColor: p.color, attended: false,
+      }];
+    }
+    applyLogs(updated);
+  }, [profiles, applyLogs]);
+
   return {
     profiles, logs, simulation, currentPosition, positionError,
     getCurrentTime, getCurrentCoords,
@@ -622,6 +639,6 @@ export function useAutomation() {
     addProfile, updateProfile, deleteProfile, toggleProfile,
     updateSimulation,
     getWeeklyHours, getTodayStatus, clearLogs,
-    addManualRecord, updateRecord, deleteRecord, markLeave, restoreBackup,
+    addManualRecord, updateRecord, deleteRecord, markLeave, markAbsent, restoreBackup,
   };
 }

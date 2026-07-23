@@ -195,6 +195,7 @@ function AppContent() {
             onUpdateRecord={automation.updateRecord}
             onDeleteRecord={automation.deleteRecord}
             onMarkLeave={automation.markLeave}
+            onMarkAbsent={automation.markAbsent}
           />
         );
       case 'export':

@@ -365,6 +365,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
 
                     int totalMins   = 0;
                     boolean present = false, absent = false, open = false, leave = false;
+                    boolean attendedAny = false;
                     long earliestIn = Long.MAX_VALUE, latestOut = Long.MIN_VALUE;
                     for (int li = 0; li < logs.length(); li++) {
                         JSONObject l = logs.getJSONObject(li);
@@ -373,6 +374,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                         if ("absent".equals(l.optString("status"))) { absent = true; continue; }
                         if ("leave".equals(l.optString("status")))  { leave  = true; continue; }
                         present = true;
+                        if (l.optBoolean("attended", true)) attendedAny = true;
                         try {
                             Date ci = isoFmt.parse(l.optString("checkIn", ""));
                             if (ci != null && ci.getTime() < earliestIn) earliestIn = ci.getTime();
@@ -387,8 +389,8 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                             if (!l.isNull("duration")) totalMins += l.optInt("duration", 0);
                         }
                     }
-                    if (present) presentCnt++;
-                    if (absent && !present) absentCnt++;
+                    if (present && (attendedAny || open)) presentCnt++;
+                    if ((absent && !present) || (present && !open && !attendedAny)) absentCnt++;
 
                     // Fill one table row for this profile+day (large widget)
                     if (tRow < 9 && (present || absent || leave)) {
@@ -404,9 +406,12 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                         if (open) {
                             d.tableCells[tRow][5] = "Active";
                             d.tableStatusColor[tRow] = COLOR_ACTIVE;
-                        } else if (present) {
+                        } else if (present && attendedAny) {
                             d.tableCells[tRow][5] = "Present";
                             d.tableStatusColor[tRow] = COLOR_PRESENT;
+                        } else if (present) {
+                            d.tableCells[tRow][5] = "Absent";
+                            d.tableStatusColor[tRow] = COLOR_ABSENT;
                         } else if (leave) {
                             d.tableCells[tRow][5] = "Leave";
                             d.tableStatusColor[tRow] = COLOR_LEAVE;
@@ -451,6 +456,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                     String dateCell = (back == 0) ? "Today" : shortDateLbl.format(mCal.getTime());
 
                     boolean present = false, absent = false, leave = false, open = false;
+                    boolean attendedAny = false;
                     int totalMins = 0;
                     long earliestIn = Long.MAX_VALUE, latestOut = Long.MIN_VALUE;
                     for (int li = 0; li < logs.length(); li++) {
@@ -460,6 +466,7 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                         if ("absent".equals(l.optString("status"))) { absent = true; continue; }
                         if ("leave".equals(l.optString("status")))  { leave  = true; continue; }
                         present = true;
+                        if (l.optBoolean("attended", true)) attendedAny = true;
                         try {
                             Date ci = isoFmt.parse(l.optString("checkIn", ""));
                             if (ci != null && ci.getTime() < earliestIn) earliestIn = ci.getTime();
@@ -481,13 +488,14 @@ public class AttendanceWidgetProvider extends AppWidgetProvider {
                     String durCell = (totalMins > 0) ? formatDuration(totalMins).replace(" ", "") : "--";
                     String stText; int stColor;
                     if (open)          { stText = "\u2026"; stColor = COLOR_ACTIVE;  }
-                    else if (present)  { stText = "P";       stColor = COLOR_PRESENT; }
+                    else if (present && attendedAny) { stText = "P"; stColor = COLOR_PRESENT; }
+                    else if (present)  { stText = "A";       stColor = COLOR_ABSENT;  }
                     else if (leave)    { stText = "L";       stColor = COLOR_LEAVE;   }
                     else if (absent)   { stText = "A";       stColor = COLOR_ABSENT;  }
                     else               { stText = "-";       stColor = COLOR_NONE;    }
 
                     if (!present && !open) { inCell = "--"; outCell = "--"; }
-                    if (absent || leave || (!present && !open)) durCell = "--";
+                    if ((absent && !present) || (leave && !present) || (!present && !open)) durCell = "--";
 
                     d.medCell[pi][back][0] = dateCell;
                     d.medCell[pi][back][1] = inCell;

@@ -15,6 +15,7 @@ interface AttendanceHistoryProps {
   onUpdateRecord: (logId: string, checkIn: string, checkOut: string | null) => void;
   onDeleteRecord: (logId: string) => void;
   onMarkLeave: (date: string, profileId: string | null) => void;
+  onMarkAbsent: (date: string, profileId: string | null) => void;
 }
 
 type SortKey = 'date' | 'profileName' | 'duration' | 'status' | 'attended';
@@ -29,13 +30,13 @@ function isoToHHMM(iso: string): string {
 }
 
 export default function AttendanceHistory({
-  logs, profiles, onClear, onAddManual, onUpdateRecord, onDeleteRecord, onMarkLeave,
+  logs, profiles, onClear, onAddManual, onUpdateRecord, onDeleteRecord, onMarkLeave, onMarkAbsent,
 }: AttendanceHistoryProps) {
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   // Add-record / mark-leave form
-  const [formMode, setFormMode] = useState<'add' | 'leave' | null>(null);
+  const [formMode, setFormMode] = useState<'add' | 'leave' | 'absent' | null>(null);
   const [fProfile, setFProfile] = useState('');
   const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [fIn, setFIn] = useState('09:00');
@@ -52,6 +53,9 @@ export default function AttendanceHistory({
     } else if (formMode === 'leave') {
       if (!fDate) return;
       onMarkLeave(fDate, fProfile || null);
+    } else if (formMode === 'absent') {
+      if (!fDate) return;
+      onMarkAbsent(fDate, fProfile || null);
     }
     setFormMode(null);
   };
@@ -101,6 +105,12 @@ export default function AttendanceHistory({
           >
             <Plane className="h-3.5 w-3.5" /> Mark Leave
           </button>
+          <button
+            onClick={() => { setFormMode(formMode === 'absent' ? null : 'absent'); setFProfile(''); }}
+            className="rounded-xl bg-rose-50 text-rose-600 border border-rose-200 px-3 py-1.5 text-sm font-medium hover:bg-rose-100 transition flex items-center gap-1 dark:bg-rose-950 dark:text-rose-300 dark:border-rose-800 dark:hover:bg-rose-900"
+          >
+            <UserX className="h-3.5 w-3.5" /> Mark Absent
+          </button>
         {logs.length > 0 && (
           <button
             onClick={onClear}
@@ -116,7 +126,9 @@ export default function AttendanceHistory({
       {formMode && (
         <div className="card p-4 space-y-3">
           <h3 className="font-semibold text-heading text-sm">
-            {formMode === 'add' ? 'Add manual record' : 'Mark leave / holiday'}
+            {formMode === 'add' ? 'Add manual record'
+              : formMode === 'leave' ? 'Mark leave / holiday'
+              : 'Mark absent'}
           </h3>
           <div className="grid grid-cols-2 gap-2">
             <select
@@ -124,7 +136,7 @@ export default function AttendanceHistory({
               onChange={e => setFProfile(e.target.value)}
               className="input-field"
             >
-              {formMode === 'leave' && <option value="">All profiles</option>}
+              {formMode !== 'add' && <option value="">All profiles</option>}
               {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
             <input type="date" value={fDate} onChange={e => setFDate(e.target.value)} className="input-field" />
@@ -143,6 +155,9 @@ export default function AttendanceHistory({
           </div>
           {formMode === 'leave' && (
             <p className="text-xs text-sub">Leave days are never marked absent and don't break your streak.</p>
+          )}
+          {formMode === 'absent' && (
+            <p className="text-xs text-sub">Marks the day absent. Profiles that already have a record for this date are left untouched.</p>
           )}
           <div className="flex gap-2">
             <button onClick={submitForm} className="rounded-xl bg-indigo-600 text-white px-4 py-2 text-sm font-medium hover:bg-indigo-700 transition">Save</button>
